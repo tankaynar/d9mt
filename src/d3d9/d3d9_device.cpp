@@ -2671,6 +2671,29 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
   auto cap = BuildDrawCapture(mtlPrimType);
   if (!cap.pso) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
+#ifdef DXMT_PERF
+  { // d9mt diag: check non-indexed vertex reads against the vertex buffer size
+    static int reported = 0;
+    if (reported < 40) {
+      for (uint32_t mask = cap.slot_mask; mask; mask &= mask - 1) {
+        unsigned i = __builtin_ctz(mask);
+        auto *vb = stream_sources_[i].ptr();
+        uint32_t declEnd = 0;
+        for (auto &e : current_vdecl_->elements()) {
+          if (e.Stream == 0xFF) break;
+          if (e.Stream == i) declEnd = std::max<uint32_t>(declEnd, e.Offset + GetDecltypeSize((D3DDECLTYPE)e.Type));
+        }
+        uint64_t need = vb ? (uint64_t)stream_offsets_[i] + (uint64_t)(StartVertex + vertexCount) * stream_strides_[i] : 0;
+        if (!vb || need > vb->length() || declEnd > stream_strides_[i]) {
+          reported++;
+          fprintf(stderr, "d9mt OOB draw(np): stream=%u vb=%p vblen=%u off=%u stride=%u declEnd=%u | start=%u count=%u prims=%u type=%d need=%llu slot_mask=%#x\n",
+                  i, (void *)vb, vb ? vb->length() : 0, stream_offsets_[i], stream_strides_[i], declEnd, StartVertex, vertexCount,
+                  PrimitiveCount, (int)PrimitiveType, (unsigned long long)need, cap.slot_mask);
+        }
+      }
+    }
+  }
+#endif
   BatchedDraw bd;
   bd.cap = std::move(cap);
   bd.type = BatchedDraw::kNonIndexed;
