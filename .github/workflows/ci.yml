@@ -293,7 +293,7 @@ jobs:
           path: ./toolchains/llvm-darwin-arm64
 
   build-gcc-release-x86_64-windows-cross:
-    runs-on: macos-15
+    runs-on: macos-26
     needs: [setup-wine, setup-llvm-darwin]
     steps:
       - name: Checkout
@@ -317,9 +317,6 @@ jobs:
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
           path: ./toolchains/llvm-darwin
-
-      - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       - name: Install Meson
         run: pip3 install meson==1.10.0 --break-system-packages
@@ -337,7 +334,7 @@ jobs:
           path: install
 
   build-gcc-release-x86-windows-cross:
-    runs-on: macos-15
+    runs-on: macos-26
     needs: [setup-wine, setup-llvm-darwin]
     steps:
       - name: Checkout
@@ -361,9 +358,6 @@ jobs:
         with:
           key: llvm-darwin-${{ env.LLVM_VERSION }}-x86_64-macos
           path: ./toolchains/llvm-darwin
-
-      - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode_16.1.app
 
       - name: Install Meson
         run: pip3 install meson==1.10.0 --break-system-packages
