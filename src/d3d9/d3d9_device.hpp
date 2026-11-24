@@ -11,6 +11,7 @@
 #include "dxmt_presenter.hpp"
 #include "dxmt_texture.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_buffer.hpp" // full types needed for Com<D3D9VertexBuffer/IndexBuffer> members (GCC)
 #include "log/log.hpp"
 #include <array>
 #include <map>
