@@ -1,5 +1,6 @@
 
 #include "d3d9_buffer.hpp"
+#include "d3d9_trace.hpp"
 #include "d3d9_device.hpp"
 #include <cstring>
 
@@ -12,18 +13,18 @@ D3D9VertexBuffer::D3D9VertexBuffer(
       buffer_(std::move(buffer)), allocation_(std::move(allocation)) {}
 
 HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObj) {
-  if (!ppvObj) return E_POINTER;
+  if (!ppvObj) return D9MT_FAIL(E_POINTER);
   *ppvObj = nullptr;
   if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DVertexBuffer9) ||
       riid == __uuidof(IDirect3DResource9)) {
     *ppvObj = ref(this);
     return S_OK;
   }
-  return E_NOINTERFACE;
+  return D9MT_FAIL(E_NOINTERFACE);
 }
 
 HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
-  if (!ppDevice) return D3DERR_INVALIDCALL;
+  if (!ppDevice) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
@@ -33,7 +34,7 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif
-  if (!ppbData) return D3DERR_INVALIDCALL;
+  if (!ppbData) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   if ((Flags & D3DLOCK_DISCARD) && (usage_ & D3DUSAGE_DYNAMIC)) {
     // Allocate fresh backing store; old allocation stays alive via draw captures
@@ -53,7 +54,7 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
   }
 
   void *mapped = allocation_->mappedMemory(0);
-  if (!mapped) return D3DERR_INVALIDCALL;
+  if (!mapped) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   *ppbData = static_cast<uint8_t *>(mapped) + OffsetToLock;
 #ifdef DXMT_PERF
@@ -67,7 +68,7 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Unlock() {
 }
 
 HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) {
-  if (!pDesc) return D3DERR_INVALIDCALL;
+  if (!pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
   pDesc->Format = D3DFMT_VERTEXDATA;
   pDesc->Type = D3DRTYPE_VERTEXBUFFER;
   pDesc->Usage = usage_;
@@ -86,18 +87,18 @@ D3D9IndexBuffer::D3D9IndexBuffer(
       buffer_(std::move(buffer)), allocation_(std::move(allocation)) {}
 
 HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObj) {
-  if (!ppvObj) return E_POINTER;
+  if (!ppvObj) return D9MT_FAIL(E_POINTER);
   *ppvObj = nullptr;
   if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DIndexBuffer9) ||
       riid == __uuidof(IDirect3DResource9)) {
     *ppvObj = ref(this);
     return S_OK;
   }
-  return E_NOINTERFACE;
+  return D9MT_FAIL(E_NOINTERFACE);
 }
 
 HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
-  if (!ppDevice) return D3DERR_INVALIDCALL;
+  if (!ppDevice) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
@@ -107,7 +108,7 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif
-  if (!ppbData) return D3DERR_INVALIDCALL;
+  if (!ppbData) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   if ((Flags & D3DLOCK_DISCARD) && (usage_ & D3DUSAGE_DYNAMIC)) {
     dxmt::Flags<BufferAllocationFlag> allocFlags;
@@ -124,7 +125,7 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
   }
 
   void *mapped = allocation_->mappedMemory(0);
-  if (!mapped) return D3DERR_INVALIDCALL;
+  if (!mapped) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   *ppbData = static_cast<uint8_t *>(mapped) + OffsetToLock;
 #ifdef DXMT_PERF
@@ -138,7 +139,7 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Unlock() {
 }
 
 HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
-  if (!pDesc) return D3DERR_INVALIDCALL;
+  if (!pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
   pDesc->Format = format_;
   pDesc->Type = D3DRTYPE_INDEXBUFFER;
   pDesc->Usage = usage_;

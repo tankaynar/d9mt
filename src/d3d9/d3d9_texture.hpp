@@ -1,6 +1,7 @@
 #pragma once
 
 #include "com/com_object.hpp"
+#include "d3d9_trace.hpp"
 #include "dxmt_texture.hpp"
 #include "d3d9_format.hpp"
 #include <d3d9.h>
@@ -48,21 +49,21 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final {
-    if (!ppvObj) return E_POINTER;
+    if (!ppvObj) return D9MT_FAIL(E_POINTER);
     *ppvObj = nullptr;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DResource9) ||
         riid == __uuidof(IDirect3DBaseTexture9) || riid == __uuidof(IDirect3DTexture9)) {
       *ppvObj = ref(this);
       return S_OK;
     }
-    return E_NOINTERFACE;
+    return D9MT_FAIL(E_NOINTERFACE);
   }
 
   // IDirect3DResource9
-  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
   DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { return 0; }
   DWORD STDMETHODCALLTYPE GetPriority() final { return 0; }
   void STDMETHODCALLTYPE PreLoad() final {}
@@ -78,7 +79,7 @@ public:
 
   // IDirect3DTexture9
   HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) final {
-    if (Level >= levelCount_ || !pDesc) return D3DERR_INVALIDCALL;
+    if (Level >= levelCount_ || !pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
     pDesc->Format = format_;
     pDesc->Type = D3DRTYPE_SURFACE;
     pDesc->Usage = 0;
@@ -93,7 +94,7 @@ public:
   HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) final;
 
   HRESULT STDMETHODCALLTYPE LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final {
-    if (Level >= levelCount_ || !pLockedRect) return D3DERR_INVALIDCALL;
+    if (Level >= levelCount_ || !pLockedRect) return D9MT_FAIL(D3DERR_INVALIDCALL);
     auto &mip = mips_[Level];
     pLockedRect->Pitch = mip.pitch;
     if (pRect) {
@@ -110,7 +111,7 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) final {
-    if (Level >= levelCount_) return D3DERR_INVALIDCALL;
+    if (Level >= levelCount_) return D9MT_FAIL(D3DERR_INVALIDCALL);
     return S_OK;
   }
 
@@ -283,27 +284,27 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final {
-    if (!ppvObj) return E_POINTER;
+    if (!ppvObj) return D9MT_FAIL(E_POINTER);
     *ppvObj = nullptr;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DResource9) ||
         riid == __uuidof(IDirect3DSurface9)) {
       *ppvObj = ref(this);
       return S_OK;
     }
-    return E_NOINTERFACE;
+    return D9MT_FAIL(E_NOINTERFACE);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
   DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { return 0; }
   DWORD STDMETHODCALLTYPE GetPriority() final { return 0; }
   void STDMETHODCALLTYPE PreLoad() final {}
   D3DRESOURCETYPE STDMETHODCALLTYPE GetType() final { return D3DRTYPE_SURFACE; }
 
   HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **ppContainer) final {
-    if (!ppContainer) return E_POINTER;
+    if (!ppContainer) return D9MT_FAIL(E_POINTER);
     return parent_->QueryInterface(riid, ppContainer);
   }
 
@@ -319,8 +320,8 @@ public:
     return parent_->UnlockRect(level_);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { return D3DERR_INVALIDCALL; }
-  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D3DERR_INVALIDCALL; }
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
 
   // Internal accessors for render target usage
   Rc<Texture> &texture() { return parent_->texture(); }
@@ -335,7 +336,7 @@ private:
 
 // Deferred implementation — needs D3D9TextureSurface to be complete
 inline HRESULT STDMETHODCALLTYPE D3D9Texture2D::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) {
-  if (Level >= levelCount_ || !ppSurfaceLevel) return D3DERR_INVALIDCALL;
+  if (Level >= levelCount_ || !ppSurfaceLevel) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppSurfaceLevel = ref(new D3D9TextureSurface(this, Level));
   return S_OK;
 }

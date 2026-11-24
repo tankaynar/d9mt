@@ -1,5 +1,6 @@
 
 #include "d3d9_interface.hpp"
+#include "d3d9_trace.hpp"
 #include "d3d9_device.hpp"
 #include "d3d9_format.hpp"
 #include "log/log.hpp"
@@ -13,7 +14,7 @@ D3D9Interface::D3D9Interface() {
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::QueryInterface(REFIID riid, void **ppvObj) {
   if (!ppvObj)
-    return E_POINTER;
+    return D9MT_FAIL(E_POINTER);
 
   *ppvObj = nullptr;
 
@@ -22,11 +23,11 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::QueryInterface(REFIID riid, void **ppvO
     return S_OK;
   }
 
-  return E_NOINTERFACE;
+  return D9MT_FAIL(E_NOINTERFACE);
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::RegisterSoftwareDevice(void *) {
-  return D3DERR_INVALIDCALL;
+  return D9MT_FAIL(D3DERR_INVALIDCALL);
 }
 
 UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterCount() {
@@ -36,9 +37,9 @@ UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterCount() {
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterIdentifier(
     UINT Adapter, DWORD Flags, D3DADAPTER_IDENTIFIER9 *pIdentifier) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (!pIdentifier)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   memset(pIdentifier, 0, sizeof(*pIdentifier));
   strcpy(pIdentifier->Driver, "dxmt");
@@ -111,18 +112,18 @@ UINT STDMETHODCALLTYPE D3D9Interface::GetAdapterModeCount(UINT Adapter, D3DFORMA
 HRESULT STDMETHODCALLTYPE D3D9Interface::EnumAdapterModes(
     UINT Adapter, D3DFORMAT Format, UINT Mode, D3DDISPLAYMODE *pMode) {
   if (Adapter != 0 || !pMode)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   UINT count = enumerateMatchingModes(Format, Mode, pMode);
   if (Mode >= count)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayMode(UINT Adapter, D3DDISPLAYMODE *pMode) {
   if (Adapter != 0 || !pMode)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   HMONITOR monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
   wsi::WsiMode mode;
@@ -144,19 +145,19 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::GetAdapterDisplayMode(UINT Adapter, D3D
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceType(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormat(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, DWORD Usage, D3DRESOURCETYPE RType, D3DFORMAT CheckFormat) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   // HACK(wow-launch): reject-list approach — reject unsupported resource types and unmapped formats
   // Proper fix: full format capability table
   if (RType == D3DRTYPE_CUBETEXTURE || RType == D3DRTYPE_VOLUMETEXTURE)
-    return D3DERR_NOTAVAILABLE;
+    return D9MT_FAIL(D3DERR_NOTAVAILABLE);
 
   // For depth/stencil usage, accept known depth formats
   if (Usage & D3DUSAGE_DEPTHSTENCIL) {
@@ -171,13 +172,13 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormat(
     case D3DFMT_D32F_LOCKABLE:
       return S_OK;
     default:
-      return D3DERR_NOTAVAILABLE;
+      return D9MT_FAIL(D3DERR_NOTAVAILABLE);
     }
   }
 
   // For regular textures/surfaces, check if format is mappable
   if (ConvertD3D9Format(CheckFormat) == WMTPixelFormatInvalid)
-    return D3DERR_NOTAVAILABLE;
+    return D9MT_FAIL(D3DERR_NOTAVAILABLE);
 
   return S_OK;
 }
@@ -186,32 +187,32 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceMultiSampleType(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE MultiSampleType,
     DWORD *pQualityLevels) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (pQualityLevels)
     *pQualityLevels = 1;
   if (MultiSampleType != D3DMULTISAMPLE_NONE)
-    return D3DERR_NOTAVAILABLE;
+    return D9MT_FAIL(D3DERR_NOTAVAILABLE);
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDepthStencilMatch(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, D3DFORMAT) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::CheckDeviceFormatConversion(
     UINT Adapter, D3DDEVTYPE, D3DFORMAT, D3DFORMAT) {
   if (Adapter != 0)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Interface::GetDeviceCaps(
     UINT Adapter, D3DDEVTYPE DeviceType, D3DCAPS9 *pCaps) {
   if (Adapter != 0 || !pCaps)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   memset(pCaps, 0, sizeof(*pCaps));
   pCaps->DeviceType = D3DDEVTYPE_HAL;
@@ -347,7 +348,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDevice(
     DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters,
     IDirect3DDevice9 **ppReturnedDeviceInterface) {
   if (Adapter != 0 || !pPresentationParameters || !ppReturnedDeviceInterface)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   *ppReturnedDeviceInterface = nullptr;
 
@@ -356,7 +357,7 @@ HRESULT STDMETHODCALLTYPE D3D9Interface::CreateDevice(
     return S_OK;
   } catch (...) {
     Logger::err("D3D9: Failed to create device");
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   }
 }
 

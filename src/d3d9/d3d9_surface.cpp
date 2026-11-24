@@ -1,5 +1,6 @@
 
 #include "d3d9_surface.hpp"
+#include "d3d9_trace.hpp"
 #include "d3d9_device.hpp"
 #include "wsi_platform.hpp"
 
@@ -30,7 +31,7 @@ D3D9Surface::~D3D9Surface() {
 
 HRESULT STDMETHODCALLTYPE D3D9Surface::QueryInterface(REFIID riid, void **ppvObj) {
   if (!ppvObj)
-    return E_POINTER;
+    return D9MT_FAIL(E_POINTER);
 
   *ppvObj = nullptr;
 
@@ -40,19 +41,19 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::QueryInterface(REFIID riid, void **ppvObj
     return S_OK;
   }
 
-  return E_NOINTERFACE;
+  return D9MT_FAIL(E_NOINTERFACE);
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Surface::GetDevice(IDirect3DDevice9 **ppDevice) {
   if (!ppDevice)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
   if (!pDesc)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   if (pool_ == D3DPOOL_SYSTEMMEM) {
     pDesc->Format = format_;
@@ -78,9 +79,9 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
 
 HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   if (!pLockedRect)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (locked_)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   // GPU-backed surface: do a synchronous readback
   if (texture_ && pool_ == D3DPOOL_DEFAULT) {
@@ -94,7 +95,7 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, con
 
     if (!readback_mem_) {
       readback_mem_ = wsi::aligned_malloc(alignedSize, DXMT_PAGE_SIZE);
-      if (!readback_mem_) return D3DERR_INVALIDCALL;
+      if (!readback_mem_) return D9MT_FAIL(D3DERR_INVALIDCALL);
       readback_pitch_ = bytesPerRow;
     }
 
@@ -148,7 +149,7 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, con
 
   // System memory surface
   if (pool_ != D3DPOOL_SYSTEMMEM || !sys_mem_)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   locked_ = true;
 
@@ -163,7 +164,7 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, con
 
 HRESULT STDMETHODCALLTYPE D3D9Surface::UnlockRect() {
   if (!locked_)
-    return D3DERR_INVALIDCALL;
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
   locked_ = false;
   return S_OK;
 }
