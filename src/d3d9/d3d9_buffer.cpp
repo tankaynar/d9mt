@@ -12,7 +12,7 @@ D3D9VertexBuffer::D3D9VertexBuffer(
     : device_(device), length_(length), usage_(usage), fvf_(fvf), pool_(pool),
       buffer_(std::move(buffer)), allocation_(std::move(allocation)) {}
 
-HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObj) {
+HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObj) { D9MT_TRACE();
   if (!ppvObj) return D9MT_FAIL(E_POINTER);
   *ppvObj = nullptr;
   if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DVertexBuffer9) ||
@@ -23,14 +23,14 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::QueryInterface(REFIID riid, void **p
   return D9MT_FAIL(E_NOINTERFACE);
 }
 
-HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
+HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) { D9MT_TRACE();
   if (!ppDevice) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
-    UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
+    UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) { D9MT_TRACE();
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif
@@ -63,11 +63,11 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Unlock() {
+HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Unlock() { D9MT_TRACE();
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) {
+HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) { D9MT_TRACE();
   if (!pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
   pDesc->Format = D3DFMT_VERTEXDATA;
   pDesc->Type = D3DRTYPE_VERTEXBUFFER;
@@ -86,7 +86,7 @@ D3D9IndexBuffer::D3D9IndexBuffer(
     : device_(device), length_(length), usage_(usage), format_(format), pool_(pool),
       buffer_(std::move(buffer)), allocation_(std::move(allocation)) {}
 
-HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObj) {
+HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObj) { D9MT_TRACE();
   if (!ppvObj) return D9MT_FAIL(E_POINTER);
   *ppvObj = nullptr;
   if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DIndexBuffer9) ||
@@ -97,14 +97,14 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::QueryInterface(REFIID riid, void **pp
   return D9MT_FAIL(E_NOINTERFACE);
 }
 
-HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
+HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) { D9MT_TRACE();
   if (!ppDevice) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
-    UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
+    UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) { D9MT_TRACE();
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif
@@ -134,11 +134,11 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Unlock() {
+HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Unlock() { D9MT_TRACE();
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
+HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) { D9MT_TRACE();
   if (!pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
   pDesc->Format = format_;
   pDesc->Type = D3DRTYPE_INDEXBUFFER;

@@ -11,7 +11,8 @@
 #include "dxmt_presenter.hpp"
 #include "dxmt_texture.hpp"
 #include "d3d9_fixed_function.hpp"
-#include "d3d9_buffer.hpp" // full types needed for Com<D3D9VertexBuffer/IndexBuffer> members (GCC)
+#include "d3d9_buffer.hpp"
+#include "wsi_window.hpp" // full types needed for Com<D3D9VertexBuffer/IndexBuffer> members (GCC)
 #include "log/log.hpp"
 #include <array>
 #include <map>
@@ -314,6 +315,10 @@ private:
   Com<IDirect3D9> d3d9_;
   HWND hwnd_;
   D3DPRESENT_PARAMETERS present_params_;
+  // Fullscreen: window restyled/resized to the backbuffer (like wined3d/DXGI do)
+  wsi::DXMTWindowState window_state_ = {};
+  bool fullscreen_window_ = false;
+  void ApplyFullscreenWindow();
 
   std::unique_ptr<Device> dxmt_device_;
   WMT::Object native_view_;

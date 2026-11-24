@@ -29,7 +29,7 @@ D3D9Surface::~D3D9Surface() {
   }
 }
 
-HRESULT STDMETHODCALLTYPE D3D9Surface::QueryInterface(REFIID riid, void **ppvObj) {
+HRESULT STDMETHODCALLTYPE D3D9Surface::QueryInterface(REFIID riid, void **ppvObj) { D9MT_TRACE();
   if (!ppvObj)
     return D9MT_FAIL(E_POINTER);
 
@@ -44,14 +44,14 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::QueryInterface(REFIID riid, void **ppvObj
   return D9MT_FAIL(E_NOINTERFACE);
 }
 
-HRESULT STDMETHODCALLTYPE D3D9Surface::GetDevice(IDirect3DDevice9 **ppDevice) {
+HRESULT STDMETHODCALLTYPE D3D9Surface::GetDevice(IDirect3DDevice9 **ppDevice) { D9MT_TRACE();
   if (!ppDevice)
     return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppDevice = ref(static_cast<IDirect3DDevice9 *>(device_));
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
+HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) { D9MT_TRACE();
   if (!pDesc)
     return D9MT_FAIL(D3DERR_INVALIDCALL);
 
@@ -65,9 +65,9 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
     pDesc->Width = width_;
     pDesc->Height = height_;
   } else {
-    pDesc->Format = D3DFMT_X8R8G8B8;
+    pDesc->Format = format_;
     pDesc->Type = D3DRTYPE_SURFACE;
-    pDesc->Usage = D3DUSAGE_RENDERTARGET;
+    pDesc->Usage = gpu_usage_;
     pDesc->Pool = D3DPOOL_DEFAULT;
     pDesc->MultiSampleType = D3DMULTISAMPLE_NONE;
     pDesc->MultiSampleQuality = 0;
@@ -77,7 +77,7 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
+HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) { D9MT_TRACE();
   if (!pLockedRect)
     return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (locked_)
@@ -162,7 +162,7 @@ HRESULT STDMETHODCALLTYPE D3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, con
   return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE D3D9Surface::UnlockRect() {
+HRESULT STDMETHODCALLTYPE D3D9Surface::UnlockRect() { D9MT_TRACE();
   if (!locked_)
     return D9MT_FAIL(D3DERR_INVALIDCALL);
   locked_ = false;

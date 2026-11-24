@@ -48,7 +48,7 @@ public:
     }
   }
 
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final {
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final { D9MT_TRACE();
     if (!ppvObj) return D9MT_FAIL(E_POINTER);
     *ppvObj = nullptr;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DResource9) ||
@@ -60,25 +60,25 @@ public:
   }
 
   // IDirect3DResource9
-  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { return 0; }
-  DWORD STDMETHODCALLTYPE GetPriority() final { return 0; }
-  void STDMETHODCALLTYPE PreLoad() final {}
-  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() final { return D3DRTYPE_TEXTURE; }
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { D9MT_TRACE(); return 0; }
+  DWORD STDMETHODCALLTYPE GetPriority() final { D9MT_TRACE(); return 0; }
+  void STDMETHODCALLTYPE PreLoad() final { D9MT_TRACE();}
+  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() final { D9MT_TRACE(); return D3DRTYPE_TEXTURE; }
 
   // IDirect3DBaseTexture9
-  DWORD STDMETHODCALLTYPE SetLOD(DWORD) final { return 0; }
-  DWORD STDMETHODCALLTYPE GetLOD() final { return 0; }
-  DWORD STDMETHODCALLTYPE GetLevelCount() final { return levelCount_; }
-  HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE) final { return S_OK; }
-  D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() final { return D3DTEXF_NONE; }
-  void STDMETHODCALLTYPE GenerateMipSubLevels() final {}
+  DWORD STDMETHODCALLTYPE SetLOD(DWORD) final { D9MT_TRACE(); return 0; }
+  DWORD STDMETHODCALLTYPE GetLOD() final { D9MT_TRACE(); return 0; }
+  DWORD STDMETHODCALLTYPE GetLevelCount() final { D9MT_TRACE(); return levelCount_; }
+  HRESULT STDMETHODCALLTYPE SetAutoGenFilterType(D3DTEXTUREFILTERTYPE) final { D9MT_TRACE(); return S_OK; }
+  D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE GetAutoGenFilterType() final { D9MT_TRACE(); return D3DTEXF_NONE; }
+  void STDMETHODCALLTYPE GenerateMipSubLevels() final { D9MT_TRACE();}
 
   // IDirect3DTexture9
-  HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) final {
+  HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) final { D9MT_TRACE();
     if (Level >= levelCount_ || !pDesc) return D9MT_FAIL(D3DERR_INVALIDCALL);
     pDesc->Format = format_;
     pDesc->Type = D3DRTYPE_SURFACE;
@@ -93,7 +93,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) final;
 
-  HRESULT STDMETHODCALLTYPE LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final {
+  HRESULT STDMETHODCALLTYPE LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final { D9MT_TRACE();
     if (Level >= levelCount_ || !pLockedRect) return D9MT_FAIL(D3DERR_INVALIDCALL);
     auto &mip = mips_[Level];
     pLockedRect->Pitch = mip.pitch;
@@ -110,12 +110,12 @@ public:
     return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) final {
+  HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) final { D9MT_TRACE();
     if (Level >= levelCount_) return D9MT_FAIL(D3DERR_INVALIDCALL);
     return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *) final { return S_OK; }
+  HRESULT STDMETHODCALLTYPE AddDirtyRect(const RECT *) final { D9MT_TRACE(); return S_OK; }
 
   // Internal accessors
   Rc<Texture> &texture() { return texture_; }
@@ -283,7 +283,7 @@ public:
     if (parent_) parent_->Release();
   }
 
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final {
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) final { D9MT_TRACE();
     if (!ppvObj) return D9MT_FAIL(E_POINTER);
     *ppvObj = nullptr;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(IDirect3DResource9) ||
@@ -294,34 +294,34 @@ public:
     return D9MT_FAIL(E_NOINTERFACE);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { return 0; }
-  DWORD STDMETHODCALLTYPE GetPriority() final { return 0; }
-  void STDMETHODCALLTYPE PreLoad() final {}
-  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() final { return D3DRTYPE_SURFACE; }
+  HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, const void *, DWORD, DWORD) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, void *, DWORD *) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  DWORD STDMETHODCALLTYPE SetPriority(DWORD) final { D9MT_TRACE(); return 0; }
+  DWORD STDMETHODCALLTYPE GetPriority() final { D9MT_TRACE(); return 0; }
+  void STDMETHODCALLTYPE PreLoad() final { D9MT_TRACE();}
+  D3DRESOURCETYPE STDMETHODCALLTYPE GetType() final { D9MT_TRACE(); return D3DRTYPE_SURFACE; }
 
-  HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **ppContainer) final {
+  HRESULT STDMETHODCALLTYPE GetContainer(REFIID riid, void **ppContainer) final { D9MT_TRACE();
     if (!ppContainer) return D9MT_FAIL(E_POINTER);
     return parent_->QueryInterface(riid, ppContainer);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) final {
+  HRESULT STDMETHODCALLTYPE GetDesc(D3DSURFACE_DESC *pDesc) final { D9MT_TRACE();
     return parent_->GetLevelDesc(level_, pDesc);
   }
 
-  HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final {
+  HRESULT STDMETHODCALLTYPE LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) final { D9MT_TRACE();
     return parent_->LockRect(level_, pLockedRect, pRect, Flags);
   }
 
-  HRESULT STDMETHODCALLTYPE UnlockRect() final {
+  HRESULT STDMETHODCALLTYPE UnlockRect() final { D9MT_TRACE();
     return parent_->UnlockRect(level_);
   }
 
-  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
-  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE GetDC(HDC *) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
+  HRESULT STDMETHODCALLTYPE ReleaseDC(HDC) final { D9MT_TRACE(); return D9MT_FAIL(D3DERR_INVALIDCALL); }
 
   // Internal accessors for render target usage
   Rc<Texture> &texture() { return parent_->texture(); }
@@ -335,7 +335,7 @@ private:
 };
 
 // Deferred implementation — needs D3D9TextureSurface to be complete
-inline HRESULT STDMETHODCALLTYPE D3D9Texture2D::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) {
+inline HRESULT STDMETHODCALLTYPE D3D9Texture2D::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) { D9MT_TRACE();
   if (Level >= levelCount_ || !ppSurfaceLevel) return D9MT_FAIL(D3DERR_INVALIDCALL);
   *ppSurfaceLevel = ref(new D3D9TextureSurface(this, Level));
   return S_OK;
