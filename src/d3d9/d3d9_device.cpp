@@ -1803,7 +1803,7 @@ obj_handle_t D3D9Device::CreatePSO() {
 
   pipeline_info.rasterization_enabled = true;
   pipeline_info.raster_sample_count = 1;
-  pipeline_info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+  // Leave input_primitive_topology Unspecified: the same PSO is used for lines/points too.
 
   // Blend state
   if (blendEnable) {
@@ -2744,6 +2744,35 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
       ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
   UINT indexStride = (indexType == WMTIndexTypeUInt32) ? 4 : 2;
   uint64_t indexBufferOffset = StartIndex * indexStride;
+#ifdef DXMT_PERF
+  { // d9mt diag: do the GPU's vertex-address arithmetic on the CPU and log draws that read out of range
+    static int reported = 0;
+    if (reported < 40) {
+      const uint8_t *ib = (const uint8_t *)current_ib_->allocation()->mappedMemory(0);
+      uint32_t maxIdx = 0, minIdx = 0xffffffff;
+      bool ibOk = (uint64_t)StartIndex * indexStride + (uint64_t)indexCount * indexStride <= current_ib_->length();
+      if (ibOk)
+        for (UINT k = 0; k < indexCount; k++) {
+          uint32_t v = indexStride == 4 ? ((const uint32_t *)(ib + indexBufferOffset))[k] : ((const uint16_t *)(ib + indexBufferOffset))[k];
+          if (v > maxIdx) maxIdx = v;
+          if (v < minIdx) minIdx = v;
+        }
+      for (uint32_t mask = cap.slot_mask; mask; mask &= mask - 1) {
+        unsigned i = __builtin_ctz(mask);
+        auto *vb = stream_sources_[i].ptr();
+        uint64_t need = vb ? (uint64_t)stream_offsets_[i] + ((int64_t)maxIdx + BaseVertexIndex + 1) * stream_strides_[i] : 0;
+        if (!vb || !ibOk || need > vb->length()) {
+          reported++;
+          fprintf(stderr, "d9mt OOB draw: stream=%u vb=%p vblen=%u off=%u stride=%u | base=%d minVI=%u numV=%u start=%u prims=%u type=%d"
+                  " idx[min=%u max=%u] ib32=%d iblen=%u ibOk=%d need=%llu slot_mask=%#x\n",
+                  i, (void *)vb, vb ? vb->length() : 0, stream_offsets_[i], stream_strides_[i], BaseVertexIndex, MinVertexIndex,
+                  NumVertices, StartIndex, PrimitiveCount, (int)PrimitiveType, minIdx, maxIdx, indexStride == 4,
+                  current_ib_->length(), (int)ibOk, (unsigned long long)need, cap.slot_mask);
+        }
+      }
+    }
+  }
+#endif
 
   BatchedDraw bd;
   bd.cap = std::move(cap);
