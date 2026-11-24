@@ -2254,7 +2254,8 @@ void D3D9Device::FlushDrawBatch() {
     ctx.endPass();
     auto te1 = pclk::now();
     size_t n = draws.size();
-    draws.clear();
+    // NOTE: do not clear `draws` here: the captured allocations (dynamic VBs/IBs) must stay alive
+    // until the chunk completes on the GPU; the lambda is destroyed in chunk.reset() after that.
     auto te2 = pclk::now();
     double total = pms(te2 - tb);
     if (total > 50)
