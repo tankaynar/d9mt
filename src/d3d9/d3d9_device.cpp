@@ -1292,7 +1292,10 @@ static WMT::Reference<WMT::Function> CompileDxsoVertexShaderWithLayout(
   // Build SM50_IA_INPUT_ELEMENT array by matching D3D9 vertex elements to DXSO input DCLs
   auto &elements = vdecl->elements();
   std::vector<SM50_IA_INPUT_ELEMENT> ia_elements;
-  uint32_t slot_mask = 0;
+  // The vertex-buffer table is compacted by stream mask. BuildDrawCapture fills it using the
+  // declaration's full mask, so the shader must use the same mask (not only the streams it reads),
+  // otherwise later streams shift by one entry and the GPU reads the wrong buffer / past the table.
+  uint32_t slot_mask = vdecl->slotMask();
 
   for (auto &elem : elements) {
     if (elem.Stream == 0xFF) break;
@@ -1311,7 +1314,6 @@ static WMT::Reference<WMT::Function> CompileDxsoVertexShaderWithLayout(
         ia_elem.step_function = 0;
         ia_elem.step_rate = 1;
         ia_elements.push_back(ia_elem);
-        slot_mask |= (1 << elem.Stream);
         break;
       }
     }
@@ -1326,6 +1328,7 @@ static WMT::Reference<WMT::Function> CompileDxsoVertexShaderWithLayout(
   Sha1HashState keyHash;
   keyHash.update(vs->sha1());
   keyHash.update(ia_elements.data(), ia_elements.size() * sizeof(SM50_IA_INPUT_ELEMENT));
+  keyHash.update(&slot_mask, sizeof(slot_mask));
   auto cacheKey = keyHash.final();
 
   auto &cache = ShaderCache::getInstance(metalVersion);
