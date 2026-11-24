@@ -15,6 +15,7 @@ namespace dxmt {
 class D3D9Device;
 class D3D9TextureSurface;
 
+static constexpr UINT kGuardBytes = 4096;
 class D3D9Texture2D final : public ComObjectClamp<IDirect3DTexture9> {
 public:
   D3D9Texture2D(D3D9Device *device, UINT width, UINT height, UINT levels,
@@ -33,8 +34,9 @@ public:
       mip.height = mipH;
       mip.pitch = D3D9FormatPitch(format, mipW);
       mip.dataSize = D3D9FormatMipSize(format, mipW, mipH);
-      mip.data = std::malloc(mip.dataSize);
+      mip.data = std::malloc(mip.dataSize + kGuardBytes);
       std::memset(mip.data, 0, mip.dataSize);
+      std::memset(static_cast<uint8_t *>(mip.data) + mip.dataSize, 0xCD, kGuardBytes);
       mip.dirty = false;
       mips_.push_back(mip);
       mipW = std::max(1u, mipW / 2);
@@ -99,9 +101,15 @@ public:
     pLockedRect->Pitch = mip.pitch;
     if (pRect) {
       // Return pointer to the sub-rect origin within the mip buffer
-      UINT bytesPerPixel = mip.pitch / mip.width;
-      pLockedRect->pBits = static_cast<uint8_t *>(mip.data)
-        + pRect->top * mip.pitch + pRect->left * bytesPerPixel;
+      if (IsCompressedFormat(format_)) {
+        // pitch is per row of 4x4 blocks
+        pLockedRect->pBits = static_cast<uint8_t *>(mip.data)
+          + (pRect->top / 4) * mip.pitch + (pRect->left / 4) * D3D9FormatBlockSize(format_);
+      } else {
+        UINT bytesPerPixel = D3D9FormatBytesPerPixel(format_);
+        pLockedRect->pBits = static_cast<uint8_t *>(mip.data)
+          + pRect->top * mip.pitch + pRect->left * bytesPerPixel;
+      }
     } else {
       pLockedRect->pBits = mip.data;
     }
@@ -112,6 +120,19 @@ public:
 
   HRESULT STDMETHODCALLTYPE UnlockRect(UINT Level) final { D9MT_TRACE();
     if (Level >= levelCount_) return D9MT_FAIL(D3DERR_INVALIDCALL);
+    auto &mip = mips_[Level];
+    auto *guard = static_cast<uint8_t *>(mip.data) + mip.dataSize;
+    for (UINT i = 0; i < kGuardBytes; i++) {
+      if (guard[i] != 0xCD) {
+        static int reported = 0;
+        if (reported++ < 20)
+          Logger::err(str::format("D3D9: texture overflow! fmt=", (uint32_t)format_, " ", width_, "x", height_,
+                                  " level=", Level, " (", mip.width, "x", mip.height, ") size=", mip.dataSize,
+                                  " pitch=", mip.pitch, " overrun>=", i + 1));
+        std::memset(guard, 0xCD, kGuardBytes);
+        break;
+      }
+    }
     return S_OK;
   }
 

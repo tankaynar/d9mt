@@ -31,6 +31,11 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevic
 
 HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
     UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) { D9MT_TRACE();
+  if (OffsetToLock > length_ || (SizeToLock && OffsetToLock + SizeToLock > length_)) {
+    static int reported = 0;
+    if (reported++ < 20)
+      Logger::err(str::format("D3D9: D3D9VertexBuffer::Lock out of range: offset=", OffsetToLock, " size=", SizeToLock, " length=", length_, " flags=", Flags));
+  }
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif
@@ -105,6 +110,11 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice
 
 HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
     UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) { D9MT_TRACE();
+  if (OffsetToLock > length_ || (SizeToLock && OffsetToLock + SizeToLock > length_)) {
+    static int reported = 0;
+    if (reported++ < 20)
+      Logger::err(str::format("D3D9: D3D9IndexBuffer::Lock out of range: offset=", OffsetToLock, " size=", SizeToLock, " length=", length_, " flags=", Flags));
+  }
 #ifdef DXMT_PERF
   auto perf_t0 = clock::now();
 #endif

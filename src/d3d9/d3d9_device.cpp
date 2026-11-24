@@ -1,6 +1,7 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_trace.hpp"
+#include "util_env.hpp"
 #include "d3d9_buffer.hpp"
 #include "d3d9_format.hpp"
 #include "d3d9_query.hpp"
@@ -259,6 +260,11 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
   material_.Power = 0.0f;
 
   Logger::info("D3D9Device: created successfully");
+  // Debug: D9MT_WAIT_SECONDS=N pauses here so a debugger can attach.
+  if (auto w = env::getEnvVar("D9MT_WAIT_SECONDS"); !w.empty()) {
+    Logger::info(str::format("D3D9Device: waiting ", w, "s for debugger (pid ", GetCurrentProcessId(), ")"));
+    Sleep((DWORD)std::stoul(w) * 1000);
+  }
 }
 
 D3D9Device::~D3D9Device() {
@@ -446,9 +452,17 @@ void D3D9Device::ApplyFullscreenWindow() {
     fullscreen_window_ = wsi::enterFullscreenMode(monitor, hwnd_, &window_state_, false);
   RECT rect = {};
   ::GetWindowRect(hwnd_, &rect);
-  ::SetWindowPos(hwnd_, nullptr, rect.left, rect.top,
+  ::SetWindowPos(hwnd_, HWND_TOP, rect.left, rect.top,
                  present_params_.BackBufferWidth, present_params_.BackBufferHeight,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                 SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
+  // A fullscreen device owns the foreground. RenderWare only finishes its startup
+  // (calls Reset and starts rendering) once its window is activated, so don't rely on a click.
+  if (::GetForegroundWindow() != hwnd_) {
+    ::SetForegroundWindow(hwnd_);
+    ::SetActiveWindow(hwnd_);
+    ::SetFocus(hwnd_);
+  }
+  Logger::info(str::format("D3D9Device: foreground=", ::GetForegroundWindow() == hwnd_ ? "yes" : "no"));
   RECT client = {};
   ::GetClientRect(hwnd_, &client);
   Logger::info(str::format("D3D9Device: fullscreen window client ", client.right - client.left, "x",
@@ -552,6 +566,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderTarget(DWORD RenderTargetIndex, I
   current_rt_ = rtTex;
   current_rt_view_ = rtView;
   current_rt_format_ = rtFormat;
+  Logger::info(str::format("SetRenderTarget: texSurface=", isTexSurface, " tex=", (void *)rtTex.ptr(), " fmt=", (uint32_t)rtFormat));
 
 
   // Update viewport to match new render target size
@@ -595,9 +610,14 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
 
   FlushDrawBatch();
 
+  static const bool debugRedAll = !env::getEnvVar("D9MT_CLEAR_RED").empty();
+  if (debugRedAll) Flags |= D3DCLEAR_TARGET; // debug: also clear colour (to red, below)
   bool clearColor = (Flags & D3DCLEAR_TARGET) != 0;
   bool clearDepth = (Flags & D3DCLEAR_ZBUFFER) != 0 && depth_stencil_;
 
+  // Debug: D9MT_CLEAR_RED=1 forces colour clears to red (is the cleared RT what we present?)
+  static const bool debugRed = !env::getEnvVar("D9MT_CLEAR_RED").empty();
+  if (debugRed) Color = 0xFFFF0000;
   float r = ((Color >> 16) & 0xFF) / 255.0f;
   float g = ((Color >> 8) & 0xFF) / 255.0f;
   float b = ((Color >> 0) & 0xFF) / 255.0f;
@@ -615,6 +635,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
       rt_view = current_rt_view_
     ](ArgumentEncodingContext &ctx) mutable {
       ctx.clearColor(std::move(rt), rt_view, 1, {r, g, b, a});
+      ::d9mt_trace::g_enc_clear_color++;
     });
   }
 
@@ -626,6 +647,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
       depth_view = depth_stencil_view_
     ](ArgumentEncodingContext &ctx) mutable {
       ctx.clearDepthStencil(std::move(depth), depth_view, 1, dsFlags, Z, (uint8_t)Stencil);
+      ::d9mt_trace::g_enc_clear_ds++;
     });
   }
 
@@ -965,6 +987,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *
     depth_stencil_view_ = surf->viewKey();
     depth_stencil_surface_ = surf;
     depth_stencil_format_ = surf->mtlFormat();
+    Logger::info(str::format("SetDepthStencilSurface: tex=", (void *)depth_stencil_.ptr(), " fmt=", (uint32_t)depth_stencil_format_));
   } else {
     depth_stencil_ = nullptr;
     depth_stencil_view_ = 0;
@@ -1757,6 +1780,8 @@ obj_handle_t D3D9Device::CreatePSO() {
 
   WMTRenderPipelineInfo pipeline_info;
   WMT::InitializeRenderPipelineInfo(pipeline_info);
+  Logger::info(str::format("CreatePSO: rt_fmt=", (uint32_t)current_rt_format_, " depthFmt=", depthFmt,
+                           " ds=", (void *)depth_stencil_.ptr(), " vs=", (void *)vs_handle, " ps=", (void *)ps_handle));
 
   pipeline_info.vertex_function = vs_handle;
   pipeline_info.fragment_function = ps_handle;
@@ -1919,13 +1944,38 @@ struct EmitState {
   uint64_t vs_const_off = 0;
   uint64_t ps_const_off = 0;
 };
+namespace { double g_es_t[6]; unsigned g_es_maxtex = 0, g_es_maxviews = 0; }
+static inline double es_now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// d9mt diag: time a write into the mapped argument buffer; when slow, describe the page and re-time.
+static void es_probe_write(const char *what, void *dst, const void *src, size_t n, void *base) {
+  double a = es_now();
+  memcpy(dst, src, n);
+  double b = es_now();
+  if (b - a > 20) {
+    MEMORY_BASIC_INFORMATION mbi = {};
+    VirtualQuery(dst, &mbi, sizeof(mbi));
+    double c = es_now();
+    memcpy(dst, src, n);
+    double d = es_now();
+    volatile char *pg = (volatile char *)(((uintptr_t)dst + 4096) & ~(uintptr_t)4095);
+    double e = es_now(); (void)pg[0]; double f = es_now();
+    fprintf(stderr, "d9mt slow write %s: %.1fms dst=%p base=%p off=%lu n=%u | again=%.3fms readnext=%.3fms | "
+            "mbi base=%p alloc=%p size=%lu state=%lx protect=%lx type=%lx tid=%lu\n",
+            what, b - a, dst, base, (unsigned long)((char *)dst - (char *)base), (unsigned)n, d - c, f - e,
+            mbi.BaseAddress, mbi.AllocationBase, (unsigned long)mbi.RegionSize, mbi.State, mbi.Protect, mbi.Type,
+            (unsigned long)GetCurrentThreadId());
+  }
+}
 static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap,
                                    DrawCapture *prev, EmitState &state,
                                    bool start_pass = true, uint64_t argbuf_size_override = 0,
                                    uint64_t argbuf_base = 0) {
+  double es0 = es_now();
   if (start_pass) {
     uint64_t alloc_size = argbuf_size_override ? argbuf_size_override : cap.argbuf_size;
-    uint8_t dsv_flags = (cap.depth_enable && cap.depth_tex)
+    // Attach the bound depth buffer even when ZENABLE is off: the PSO is built with its format, the
+    // DSSO disables the test, and later draws in the same batch may enable depth.
+    uint8_t dsv_flags = cap.depth_tex
         ? DepthStencilPlanarFlags(cap.depth_tex->pixelFormat()) : 0;
     auto &pass_info = *ctx.startRenderPass(dsv_flags, 0, 1, alloc_size);
 
@@ -1935,7 +1985,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
     color.load_action = WMTLoadActionLoad;
     color.store_action = WMTStoreActionStore;
 
-    if (cap.depth_enable && cap.depth_tex) {
+    if (cap.depth_tex) {
       pass_info.depth.attachment = ctx.access(cap.depth_tex, cap.depth_view, DXMT_ENCODER_RESOURCE_ACESS_READWRITE);
       pass_info.depth.load_action = WMTLoadActionLoad;
       pass_info.depth.store_action = WMTStoreActionStore;
@@ -1954,6 +2004,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
     ctx.bumpVisibilityResultOffset();
   }
 
+  double es1 = es_now(); g_es_t[0] += es1 - es0;
   // Set PSO — skip if identical to previous draw in batch
   if (!prev || cap.pso != prev->pso) {
     auto &setpso = ctx.encodeRenderCommand<wmtcmd_render_setpso>();
@@ -2005,6 +2056,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
                       (double)cap.vp.MinZ, (double)cap.vp.MaxZ};
   }
 
+  double es2 = es_now(); g_es_t[1] += es2 - es1;
   // Write vertex buffer entries into the argument buffer
   if (cap.slot_mask) {
     struct VERTEX_BUFFER_ENTRY {
@@ -2020,9 +2072,8 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
       auto &vc = cap.vb_captures[slot];
       if (vc.gpu_address) {
         // Transient VB from ring allocator
-        entries[index].buffer_handle = vc.gpu_address + vc.offset;
-        entries[index].stride = vc.stride;
-        entries[index].length = vc.stride ? 0xFFFFFFFF : 0;
+        VERTEX_BUFFER_ENTRY tmp{vc.gpu_address + vc.offset, vc.stride, vc.stride ? 0xFFFFFFFFu : 0u};
+        es_probe_write("vbentry", &entries[index], &tmp, sizeof(tmp), ctx.getMappedArgumentBuffer<char>(0));
         ctx.makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(
             vc.raw_buffer, DXMT_RESOURCE_RESIDENCY_VERTEX_READ);
       } else if (vc.buffer) {
@@ -2046,6 +2097,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
     setoff.index = 16;
   }
 
+  double es3 = es_now(); g_es_t[2] += es3 - es2;
   // Write VS/PS constants — skip copy and reuse previous offset when version matches
   constexpr uint64_t PS_CONST_BUF_SIZE = 256 * 4 * sizeof(float);
 
@@ -2055,7 +2107,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
   if (!reuse_vs) {
     auto *vs_const_dst = ctx.getMappedArgumentBuffer<char>(argbuf_base + cap.vb_region_size);
     uint64_t vs_copy_size = cap.vs_const_count * 4 * sizeof(float);
-    memcpy(vs_const_dst, cap.constants->vs, vs_copy_size);
+    es_probe_write("vsconst", vs_const_dst, cap.constants->vs, vs_copy_size, ctx.getMappedArgumentBuffer<char>(0));
     state.vs_const_off = ctx.getFinalArgumentBufferOffset(argbuf_base + cap.vb_region_size);
   }
   if (!reuse_vs || !prev) {
@@ -2071,7 +2123,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
     uint64_t ps_copy_size = cap.ps_const_count * 4 * sizeof(float);
     if (cap.ps_const_count < 254) {
       // Copy shader's own constants, then special registers 254-255 (alpha ref, fog)
-      memcpy(ps_const_dst, cap.constants->ps, ps_copy_size);
+      es_probe_write("psconst", ps_const_dst, cap.constants->ps, ps_copy_size, ctx.getMappedArgumentBuffer<char>(0));
       memcpy(ps_const_dst + 254 * 4 * sizeof(float),
              cap.constants->ps[254], 2 * 4 * sizeof(float));
     } else {
@@ -2086,11 +2138,15 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
     setoff_ps.index = 18;
   }
 
+  double es4 = es_now(); g_es_t[3] += es4 - es3;
   // Bind textures and samplers — skip commands if identical to previous draw
   bool tex_changed = !prev || cap.tex_sampler_fingerprint != prev->tex_sampler_fingerprint;
   for (uint8_t i = 0; i < cap.texCaptureCount; i++) {
     auto &tc = cap.texCaptures[i];
+    double ta = es_now();
     auto &view = ctx.access(tc.texture, tc.viewKey, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    double tb2 = es_now(); g_es_t[4] += tb2 - ta;
+    if (tc.viewKey > g_es_maxviews) g_es_maxviews = tc.viewKey;
     if (tex_changed) {
       auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
       settex.type = WMTRenderCommandSetFragmentTexture;
@@ -2100,10 +2156,13 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
       auto &setsamp = ctx.encodeRenderCommand<wmtcmd_render_setsamplerstate>();
       setsamp.type = WMTRenderCommandSetFragmentSamplerState;
       setsamp.sampler_state = cap.samplerHandles[tc.stage];
-      setsamp.index = 20 + tc.stage * 2;
+      setsamp.index = tc.stage; // must match shader [[sampler(stage)]]; Metal allows 0..15
     }
+    double tr = es_now();
     ctx.makeResident<PipelineStage::Pixel, PipelineKind::Ordinary>(tc.texture, tc.viewKey);
+    g_es_t[5] += es_now() - tr;
   }
+  if (cap.texCaptureCount > g_es_maxtex) g_es_maxtex = cap.texCaptureCount;
 }
 
 // Encode per-draw state into an already-open render pass (no startRenderPass/endPass)
@@ -2167,15 +2226,41 @@ void D3D9Device::FlushDrawBatch() {
 
     EmitState emit_state;
     uint64_t argbuf_offset = 0;
+    using pclk = std::chrono::steady_clock;
+    auto pms = [](pclk::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    double t_setup = 0, t_draw = 0, worst = 0; size_t worst_i = 0; int worst_phase = 0;
+    for (auto &x : g_es_t) { x = 0; }
+    g_es_maxtex = 0; g_es_maxviews = 0;
+    auto tb = pclk::now();
     for (size_t i = 0; i < draws.size(); i++) {
       auto &bd = draws[i];
       bool first = (i == 0);
       DrawCapture *prev = first ? nullptr : &draws[i - 1].cap;
+      auto a = pclk::now();
       EmitCommonRenderSetup(ctx, bd.cap, prev, emit_state, first, total_argbuf, argbuf_offset);
+      auto b = pclk::now();
       EmitDrawCommand(ctx, bd);
+      auto c = pclk::now();
+      double s1 = pms(b - a), s2 = pms(c - b);
+      t_setup += s1; t_draw += s2;
+      if (s1 > worst) { worst = s1; worst_i = i; worst_phase = 1; }
+      if (s2 > worst) { worst = s2; worst_i = i; worst_phase = 2; }
       argbuf_offset += bd.cap.argbuf_size;
     }
+    auto te0 = pclk::now();
     ctx.endPass();
+    auto te1 = pclk::now();
+    size_t n = draws.size();
+    draws.clear();
+    auto te2 = pclk::now();
+    double total = pms(te2 - tb);
+    if (total > 50)
+      fprintf(stderr, "d9mt slow batch: %.1fms draws=%u setup=%.1f draw=%.1f endPass=%.1f free=%.1f worst=%.1fms (draw #%u, %s) total_argbuf=%llu\n",
+              total, (unsigned)n, t_setup, t_draw, pms(te1 - te0), pms(te2 - te1), worst, (unsigned)worst_i,
+              worst_phase == 1 ? "setup" : "drawcmd", (unsigned long long)total_argbuf),
+      fprintf(stderr, "  setup parts: pass=%.1f state=%.1f vb=%.1f const=%.1f texaccess=%.1f resident=%.1f maxtex=%u maxview=%u\n",
+              g_es_t[0], g_es_t[1], g_es_t[2], g_es_t[3], g_es_t[4], g_es_t[5], g_es_maxtex, g_es_maxviews);
+    ::d9mt_trace::g_enc_batches++; ::d9mt_trace::g_enc_draws += n;
   });
 
   pending_draws_.clear();
@@ -2893,6 +2978,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     double vsync = (present_params_.PresentationInterval & D3DPRESENT_INTERVAL_IMMEDIATE)
         ? 0.0 : 1.0 / init_refresh_rate_;
     ctx.present(backbuffer, presenter_, vsync, state.metadata);
+    ::d9mt_trace::g_enc_present++;
     UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
   });
 
@@ -2924,6 +3010,13 @@ void D3D9Device::UpdateStatistics(const FrameStatisticsContainer &statistics, ui
   double depth = ms(avg.d3d9_depth_state_time);
   double texbnd = ms(avg.d3d9_texture_bind_time);
   double d3d9_pct = f > 0 ? (cap + lock + flush) / f * 100.0 : 0;
+  if (frame_id % 60 == 0)
+    Logger::info(str::format("perf: frame=", f, "ms capture=", cap, " lock=", lock, " flush=", flush,
+                             " pso=", pso, " const=", cnst, " texup=", tex_up, " vb=", vb,
+                             " cmdbufs=", avg.command_buffer_count, " passes=", avg.render_pass_count,
+                             " encode_flush=", ms(avg.encode_flush_interval), " commit=", ms(avg.commit_interval), " draws=", avg.d3d9_draw_count, " drawsUP=", avg.d3d9_draw_up_count, " flushes=", avg.d3d9_batch_flush_count, " psoMiss=", avg.d3d9_pso_miss_count));
+  if (frame_id % 60 == 0)
+    ::d9mt_trace::dump_and_reset();
 
   // Encoder thread
   snprintf(buf, sizeof(buf), "-- Encoder --");

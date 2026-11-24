@@ -823,7 +823,7 @@ static void compileFFPixelShader(
       .raster_order_group = {},
     });
     uint32_t sampIdx = func_sig.DefineInput(ArgumentBindingSampler{
-      .location_index = 20 + stage * 2,
+      .location_index = stage, // Metal sampler slots are 0..15 (separate namespace)
       .array_size = 1,
       .arg_name = "samp" + std::to_string(stage),
     });

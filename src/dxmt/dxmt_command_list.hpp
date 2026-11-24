@@ -1,6 +1,9 @@
 #pragma once
 #include <concepts>
 #include <functional>
+#include <chrono>
+#include <cstdio>
+#include <typeinfo>
 
 namespace dxmt {
 
@@ -114,11 +117,38 @@ public:
 
   void
   execute(Context &context) {
+#ifdef DXMT_PERF
+    // d9mt diagnostics: when a chunk takes >50ms, log which command types cost the time.
+    using clk = std::chrono::steady_clock;
+    struct Agg { const char *name; double ms; unsigned n; };
+    Agg agg[32]; unsigned nagg = 0;
+    auto t_begin = clk::now();
+    impl::CommandBase<Context> *cur = &empty;
+    while (cur) {
+      auto t0 = clk::now();
+      cur->invoke(context);
+      double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+      const char *nm = typeid(*cur).name();
+      unsigned k = 0;
+      for (; k < nagg; k++) if (agg[k].name == nm) break;
+      if (k == nagg && nagg < 32) agg[nagg++] = {nm, 0, 0};
+      if (k < nagg) { agg[k].ms += ms; agg[k].n++; }
+      cur = cur->next;
+    }
+    double total = std::chrono::duration<double, std::milli>(clk::now() - t_begin).count();
+    if (total > 50) {
+      fprintf(stderr, "d9mt slow chunk: %.1fms\n", total);
+      for (unsigned k = 0; k < nagg; k++)
+        if (agg[k].ms > 5) fprintf(stderr, "  %8.1fms n=%u %s\n", agg[k].ms, agg[k].n, agg[k].name);
+      fflush(stderr);
+    }
+#else
     impl::CommandBase<Context> *cur = &empty;
     while (cur) {
       cur->invoke(context);
       cur = cur->next;
     }
+#endif
   };
 };
 

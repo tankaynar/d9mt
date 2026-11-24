@@ -1,3 +1,4 @@
+#include <cstring>
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
 #include "thread.hpp"
@@ -23,7 +24,11 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
     info_.length = DXMT_PAGE_SIZE;
   }
   if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
-    placed_buffer = wsi::aligned_malloc(info_.length, DXMT_PAGE_SIZE);
+    // Round up and add a spare page: D3D9 games (e.g. RenderWare/GTA SA) may write slightly past
+    // a vertex buffer's end, which real drivers tolerate; without slack this corrupts the CRT heap.
+    size_t placed_size = ((info_.length + DXMT_PAGE_SIZE - 1) / DXMT_PAGE_SIZE + 1) * DXMT_PAGE_SIZE;
+    placed_buffer = wsi::aligned_malloc(placed_size, DXMT_PAGE_SIZE);
+    std::memset(placed_buffer, 0, placed_size);
     info_.memory.set(placed_buffer);
   }
   obj_ = device.newBuffer(info_);
