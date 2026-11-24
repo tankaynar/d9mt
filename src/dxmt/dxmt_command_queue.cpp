@@ -187,7 +187,24 @@ CommandQueue::WaitForFinishThread() {
       break;
     auto &chunk = chunks[internal_seq % kCommandChunkCount];
     if (chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+#ifdef DXMT_PERF
+      // d9mt diag: report command buffers that don't complete within 3 s (GPU hang / unsignalled event)
+      auto t_start = clock::now();
+      bool reported = false;
+      while (chunk.attached_cmdbuf.status() <= WMTCommandBufferStatusScheduled) {
+        Sleep(1);
+        if (!reported && clock::now() - t_start > std::chrono::seconds(3)) {
+          reported = true;
+          fprintf(stderr, "d9mt HANG: chunk=%llu frame=%llu status=%d waits_init_event=%llu init_event_now=%llu main_event_now=%llu\n",
+                  (unsigned long long)internal_seq, (unsigned long long)chunk.frame_, (int)chunk.attached_cmdbuf.status(),
+                  (unsigned long long)chunk.resource_initializer_event_id,
+                  (unsigned long long)initializer.signaledValue(), (unsigned long long)event.signaledValue());
+          fflush(stderr);
+        }
+      }
+#else
       chunk.attached_cmdbuf.waitUntilCompleted();
+#endif
     }
     if (chunk.attached_cmdbuf.status() == WMTCommandBufferStatusError) {
       ERR("Device error at frame ", chunk.frame_, ": ", chunk.attached_cmdbuf.error().description().getUTF8String());

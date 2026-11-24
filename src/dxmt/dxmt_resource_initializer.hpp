@@ -50,6 +50,11 @@ public:
     return upload_queue_event_;
   }
 
+  uint64_t
+  signaledValue() {
+    return upload_queue_event_.signaledValue();
+  }
+
 private:
   uint64_t flushInternal();
 
