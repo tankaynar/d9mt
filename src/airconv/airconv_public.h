@@ -419,6 +419,7 @@ struct D3D9_FF_PS_KEY {
   uint8_t specular_enable;
   uint8_t alpha_test_enable, alpha_test_func;
   uint8_t fog_enable;
+  uint8_t fog_coord_mode; /* 0 = FOG0 is the factor; 1=EXP 2=EXP2 3=LINEAR applied to FOG0 as a coordinate */
 };
 
 AIRCONV_API int D3D9FFCompileVS(

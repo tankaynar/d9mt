@@ -1737,6 +1737,16 @@ obj_handle_t D3D9Device::CreatePSO() {
       if (!DXSOGetVSHasFogOutput(current_vs_->handle()))
         ffkey.fog_enable = 0;
     }
+    // SM < 3 vertex shader + vertex fog (no table fog): D3D9 treats oFog as a fog coordinate and applies the
+    // FOGVERTEXMODE formula (GTA SA's RW skin shader writes (depth-start)/(end-start); used raw as a factor it
+    // fully fogged every ped).
+    ffkey.fog_coord_mode = 0;
+    if (current_vs_ && ffkey.fog_enable && render_states_[D3DRS_FOGTABLEMODE] == D3DFOG_NONE &&
+        render_states_[D3DRS_FOGVERTEXMODE] != D3DFOG_NONE) {
+      uint32_t ver = current_vs_->bytecodeSize() >= 4 ? *(const uint32_t *)current_vs_->bytecode() : 0;
+      if (((ver >> 8) & 0xFF) < 3)
+        ffkey.fog_coord_mode = (uint8_t)render_states_[D3DRS_FOGVERTEXMODE];
+    }
     // Compute effective texcoord count: max of vdecl count and PS stage needs.
     // This ensures the PS declares the same TEXCOORD inputs the VS outputs.
     {
@@ -2429,6 +2439,19 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     bool skinned = false;
     for (auto &e : current_vdecl_->elements())
       if (e.Usage == D3DDECLUSAGE_BLENDWEIGHT || e.Usage == D3DDECLUSAGE_BLENDINDICES) skinned = true;
+    static unsigned fog_logs = 0;
+    if (skinned && current_vs_ && (fog_logs < 12 || (fog_logs % 2000) == 0)) {
+      auto fl = [&](D3DRENDERSTATETYPE rs) { float f; memcpy(&f, &render_states_[rs], 4); return f; };
+      fprintf(stderr, "d9mt skin-fog #%u: fogenable=%lu table=%lu vertex=%lu range=%lu start=%g end=%g density=%g color=%08lx"
+              " | c17=(%g %g %g %g) c3=(%g %g %g %g) c4=(%g %g %g %g)\n", fog_logs,
+              (unsigned long)render_states_[D3DRS_FOGENABLE], (unsigned long)render_states_[D3DRS_FOGTABLEMODE],
+              (unsigned long)render_states_[D3DRS_FOGVERTEXMODE], (unsigned long)render_states_[D3DRS_RANGEFOGENABLE],
+              fl(D3DRS_FOGSTART), fl(D3DRS_FOGEND), fl(D3DRS_FOGDENSITY), (unsigned long)render_states_[D3DRS_FOGCOLOR],
+              vsConstants_[17][0], vsConstants_[17][1], vsConstants_[17][2], vsConstants_[17][3],
+              vsConstants_[3][0], vsConstants_[3][1], vsConstants_[3][2], vsConstants_[3][3],
+              vsConstants_[4][0], vsConstants_[4][1], vsConstants_[4][2], vsConstants_[4][3]);
+    }
+    if (skinned && current_vs_) fog_logs++;
     static std::set<std::pair<const void *, const void *>> seen;
     if (skinned && seen.size() < 32 && seen.insert({(const void *)current_vs_.ptr(), (const void *)current_ps_.ptr()}).second) {
       std::string els;

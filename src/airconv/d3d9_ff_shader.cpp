@@ -1033,7 +1033,28 @@ static void compileFFPixelShader(
     auto *fogVec = function->getArg(fog_in_idx);
     // D3D9 clamps the fog factor to [0,1]. The FF VS saturates its own fog, but a game vertex shader's
     // oFog arrives raw; unclamped values extrapolated past the fog colour (washed-out pale peds in GTA SA).
-    auto *fogFactorPS = saturate(builder, builder.CreateExtractElement(fogVec, builder.getInt32(0)));
+    Value *fogIn = builder.CreateExtractElement(fogVec, builder.getInt32(0));
+    if (key->fog_coord_mode >= 1 && key->fog_coord_mode <= 3) {
+      // FOG0 is a fog coordinate from an SM<3 VS: factor per FOGVERTEXMODE, params in c[2] = (start, end, density)
+      auto *fogParams = builder.CreateLoad(float4Ty, builder.CreateConstGEP1_32(float4Ty, cbFloat4, 2));
+      auto *fStart = builder.CreateExtractElement(fogParams, builder.getInt32(0));
+      auto *fEnd = builder.CreateExtractElement(fogParams, builder.getInt32(1));
+      auto *fDensity = builder.CreateExtractElement(fogParams, builder.getInt32(2));
+      auto *log2e = ConstantFP::get(floatTy, 1.4426950408889634);
+      llvm::raw_null_ostream fogNull;
+      llvm::air::AIRBuilder fogAir(builder, fogNull);
+      if (key->fog_coord_mode == 3) { // LINEAR
+        fogIn = builder.CreateFDiv(builder.CreateFSub(fEnd, fogIn), builder.CreateFSub(fEnd, fStart));
+      } else if (key->fog_coord_mode == 1) { // EXP: e^-(d*z)
+        fogIn = fogAir.CreateFPUnOp(fogAir.exp2,
+          builder.CreateFNeg(builder.CreateFMul(builder.CreateFMul(fDensity, fogIn), log2e)));
+      } else { // EXP2: e^-((d*z)^2)
+        auto *dz = builder.CreateFMul(fDensity, fogIn);
+        fogIn = fogAir.CreateFPUnOp(fogAir.exp2,
+          builder.CreateFNeg(builder.CreateFMul(builder.CreateFMul(dz, dz), log2e)));
+      }
+    }
+    auto *fogFactorPS = saturate(builder, fogIn);
     dbgFog = fogFactorPS;
     auto *fogInfo = builder.CreateLoad(float4Ty,
       builder.CreateConstGEP1_32(float4Ty, cbFloat4, 1));
