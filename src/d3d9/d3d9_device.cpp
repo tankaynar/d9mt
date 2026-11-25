@@ -2454,6 +2454,26 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     bool skinned = false;
     for (auto &e : current_vdecl_->elements())
       if (e.Usage == D3DDECLUSAGE_BLENDWEIGHT || e.Usage == D3DDECLUSAGE_BLENDINDICES) skinned = true;
+    { // d9mt diag: distinct vertex layouts with packed (non-float, non-D3DCOLOR) attributes, and non-skinned custom VS
+      bool packed = false;
+      for (auto &e : current_vdecl_->elements())
+        if (e.Stream != 0xFF && e.Type > D3DDECLTYPE_FLOAT4 && e.Type != D3DDECLTYPE_D3DCOLOR &&
+            !(skinned && (e.Usage == D3DDECLUSAGE_BLENDINDICES || e.Usage == D3DDECLUSAGE_BLENDWEIGHT)))
+          packed = true;
+      bool customNonSkin = current_vs_ && !skinned;
+      if (packed || customNonSkin) {
+        static std::set<std::pair<const void *, const void *>> seen2;
+        if (seen2.size() < 40 && seen2.insert({(const void *)current_vdecl_.ptr(), (const void *)current_vs_.ptr()}).second) {
+          std::string els2;
+          for (auto &e : current_vdecl_->elements())
+            els2 += str::format(" [s", e.Stream, " off", e.Offset, " type", (int)e.Type, " usage", (int)e.Usage, ".", (int)e.UsageIndex, "]");
+          uint32_t vv = current_vs_ && current_vs_->bytecodeSize() >= 4 ? *(const uint32_t *)current_vs_->bytecode() : 0;
+          fprintf(stderr, "d9mt layout #%u: %s%s vs=%p ver=%08x vblend=%lu decl:%s\n", (unsigned)seen2.size(),
+                  packed ? "PACKED " : "", customNonSkin ? "CUSTOMVS" : "FFVS", (void *)current_vs_.ptr(), vv,
+                  (unsigned long)render_states_[D3DRS_VERTEXBLEND], els2.c_str());
+        }
+      }
+    }
     static unsigned fog_logs = 0;
     if (skinned && current_vs_ && (fog_logs < 12 || (fog_logs % 2000) == 0)) {
       auto fl = [&](D3DRENDERSTATETYPE rs) { float f; memcpy(&f, &render_states_[rs], 4); return f; };
