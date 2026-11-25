@@ -17,6 +17,8 @@ def load(path):
     fps, worst = [], []
     with open(path, errors="replace") as f:
         for line in f:
+            if "wglSwapBuffers" in line:  # Wine logs every second twice (GL swap + wined3d present)
+                continue
             m = FPS_RE.search(line)
             if m:
                 fps.append(float(m.group(1)))
