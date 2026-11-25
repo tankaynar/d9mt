@@ -952,6 +952,13 @@ static void compileVertexShader(
     auto *isNotNaN = builder.CreateFCmpORD(val, val);
     auto *zeroVec = ConstantVector::getSplat(ElementCount::getFixed(4), ConstantFP::get(types._float, 0.0));
     val = builder.CreateSelect(isNotNaN, val, zeroVec);
+    // SM < 3: D3D9 clamps oD0/oD1 (slots 2-3) and oFog (slot 1) to [0,1] before interpolation. Unclamped,
+    // accumulated lighting > 1 made textured RW-skinned peds overbright/pale in GTA SA.
+    if (sm2VS && (reg == 1 || reg == 2 || reg == 3)) {
+      auto *oneVec = ConstantVector::getSplat(ElementCount::getFixed(4), ConstantFP::get(types._float, 1.0));
+      val = builder.CreateSelect(builder.CreateFCmpOLT(val, zeroVec), zeroVec, val);
+      val = builder.CreateSelect(builder.CreateFCmpOGT(val, oneVec), oneVec, val);
+    }
     retVal = builder.CreateInsertValue(retVal, val, {idx});
   }
 

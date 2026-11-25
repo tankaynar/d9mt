@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "airconv_public.h"
 #include "air_signature.hpp"
 #include "air_type.hpp"
@@ -1027,9 +1028,13 @@ static void compileFFPixelShader(
   }
 
   // Fog blending
+  Value *dbgFog = nullptr;
   if (key->fog_enable && fog_in_idx != ~0u) {
     auto *fogVec = function->getArg(fog_in_idx);
-    auto *fogFactorPS = builder.CreateExtractElement(fogVec, builder.getInt32(0));
+    // D3D9 clamps the fog factor to [0,1]. The FF VS saturates its own fog, but a game vertex shader's
+    // oFog arrives raw; unclamped values extrapolated past the fog colour (washed-out pale peds in GTA SA).
+    auto *fogFactorPS = saturate(builder, builder.CreateExtractElement(fogVec, builder.getInt32(0)));
+    dbgFog = fogFactorPS;
     auto *fogInfo = builder.CreateLoad(float4Ty,
       builder.CreateConstGEP1_32(float4Ty, cbFloat4, 1));
     // fogColor = c[1].rgb
@@ -1047,6 +1052,37 @@ static void compileFFPixelShader(
     current = builder.CreateInsertElement(current, curR, builder.getInt32(0));
     current = builder.CreateInsertElement(current, curG, builder.getInt32(1));
     current = builder.CreateInsertElement(current, curB, builder.getInt32(2));
+  }
+
+  // d9mt debug views (env D9MT_FFPS_DEBUG, read when the shader is compiled):
+  // 1 = stage-0 texture sample only, 2 = diffuse (vertex colour) only, 3 = fog factor as grey,
+  // 4 = texcoord0 as colour (u, v, 0).
+  {
+    static int dbg = -1;
+    if (dbg < 0) {
+      const char *e = getenv("D9MT_FFPS_DEBUG");
+      dbg = e ? atoi(e) : 0;
+    }
+    auto *one = ConstantFP::get(floatTy, 1.0);
+    auto *zero = ConstantFP::get(floatTy, 0.0);
+    auto rgb1 = [&](Value *r, Value *g, Value *b) {
+      Value *v = UndefValue::get(float4Ty);
+      v = builder.CreateInsertElement(v, r, builder.getInt32(0));
+      v = builder.CreateInsertElement(v, g, builder.getInt32(1));
+      v = builder.CreateInsertElement(v, b, builder.getInt32(2));
+      return builder.CreateInsertElement(v, one, builder.getInt32(3));
+    };
+    if (dbg == 1 && texSamples[0]) {
+      current = builder.CreateInsertElement(texSamples[0], one, builder.getInt32(3));
+    } else if (dbg == 2) {
+      current = builder.CreateInsertElement(diffuse, one, builder.getInt32(3));
+    } else if (dbg == 3 && dbgFog) {
+      current = rgb1(dbgFog, dbgFog, dbgFog);
+    } else if (dbg == 4 && texcoordCount > 0) {
+      auto *tc = texcoordVals[0];
+      current = rgb1(saturate(builder, builder.CreateExtractElement(tc, builder.getInt32(0))),
+                     saturate(builder, builder.CreateExtractElement(tc, builder.getInt32(1))), zero);
+    }
   }
 
   // Alpha test
