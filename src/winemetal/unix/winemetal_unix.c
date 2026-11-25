@@ -1,5 +1,7 @@
 #include <stdatomic.h>
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <stdlib.h>
 #import <Cocoa/Cocoa.h>
 #import <ColorSync/ColorSync.h>
 #import <CoreFoundation/CFRunLoop.h>
@@ -159,6 +161,22 @@ _MTLDevice_newBuffer(void *obj) {
   struct WMTBufferInfo *info = params->info.ptr;
   id<MTLBuffer> buffer;
   if (info->memory.ptr) {
+    /* d9mt: drop host EXECUTE permission on the wrapped CPU memory. For 32-bit games with DEP off, Wine maps all
+     * data rwx; Rosetta then treats a hot page of our argument buffers as code and traps every write into its
+     * exception server (~100k faults/s in GTA SA outdoors, multi-second stalls). Only whole 16 KB host pages inside
+     * the range are changed, so no host page gets mixed 4 KB protections. D9MT_NOEXEC=0 disables this. */
+    static int noexec = -1;
+    if (noexec < 0) {
+      const char *e = getenv("D9MT_NOEXEC");
+      noexec = !(e && e[0] == '0');
+    }
+    if (noexec) {
+      const uintptr_t host_page = 16384;
+      uintptr_t start = ((uintptr_t)info->memory.ptr + host_page - 1) & ~(host_page - 1);
+      uintptr_t end = ((uintptr_t)info->memory.ptr + info->length) & ~(host_page - 1);
+      if (end > start)
+        mprotect((void *)start, end - start, PROT_READ | PROT_WRITE);
+    }
     buffer = [device newBufferWithBytesNoCopy:info->memory.ptr
                                        length:info->length
                                       options:(enum MTLResourceOptions)info->options
