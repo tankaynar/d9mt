@@ -6,6 +6,7 @@
 #include "dxmt_presenter.hpp"
 #include "wsi_platform.hpp"
 #include <cstdint>
+#include <cstdlib>
 #include <cfloat>
 
 namespace dxmt {
@@ -729,7 +730,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     assert(encoder_index == encoder_count);
   }
 
-  if (encoder_count > 1) {
+  // d9mt test switch: D9MT_NO_ENCOPT=1 disables encoder reordering/merging (clear->loadAction, pass merges)
+  static const bool no_encopt = [] { const char *v = getenv("D9MT_NO_ENCOPT"); return v && *v && *v != '0'; }();
+  if (encoder_count > 1 && !no_encopt) {
     unsigned j, i;
     for (j = encoder_count - 2; j != ~0u; j--) {
       if (encoders[j]->type == EncoderType::Null)

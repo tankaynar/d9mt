@@ -1526,6 +1526,21 @@ _MetalLayer_setProps(void *obj) {
   CAMetalLayer *layer = (CAMetalLayer *)params->handle;
   const struct WMTLayerProps *props = params->arg.ptr;
   execute_on_main(^{
+    // d9mt: Core Animation scales the drawable to the window's pixel size (Retina 2x when the game runs at the
+    // Wine "points" resolution). Log what Wine's view layer had, then use a linear filter (smooth edges like
+    // the OpenGL path) unless D9MT_LAYER_FILTER=nearest|trilinear.
+    static int logged = 0;
+    if (!logged++)
+      fprintf(stderr, "d9mt layer: was magFilter=%s minFilter=%s contentsScale=%.2f bounds=%.0fx%.0f drawable=%llux%llu\n",
+              [layer.magnificationFilter UTF8String], [layer.minificationFilter UTF8String], layer.contentsScale,
+              layer.bounds.size.width, layer.bounds.size.height,
+              (unsigned long long)props->drawable_width, (unsigned long long)props->drawable_height);
+    const char *lf = getenv("D9MT_LAYER_FILTER");
+    NSString *filter = kCAFilterLinear;
+    if (lf && !strcmp(lf, "nearest")) filter = kCAFilterNearest;
+    else if (lf && !strcmp(lf, "trilinear")) filter = kCAFilterTrilinear;
+    layer.magnificationFilter = filter;
+    layer.minificationFilter = filter;
     layer.device = (id<MTLDevice>)props->device;
     layer.opaque = props->opaque;
     layer.framebufferOnly = props->framebuffer_only;

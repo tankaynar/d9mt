@@ -609,11 +609,23 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
   if (!(Flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
 
-  if (Count > 0 && pRects) {
-    static bool warned = false;
-    if (!warned) {
-      Logger::warn("D3D9: Clear with sub-rects not implemented, clearing full surface");
-      warned = true;
+  {
+    // D3D9 clears only the viewport (and the given rects, and the scissor rect when enabled); d9mt clears the
+    // whole surface. Log each distinct partial-clear signature so we know whether a game relies on it.
+    UINT rtw = current_rt_ ? current_rt_->width() : 0, rth = current_rt_ ? current_rt_->height() : 0;
+    bool vp_partial = viewport_.X != 0 || viewport_.Y != 0 || viewport_.Width < rtw || viewport_.Height < rth;
+    bool sc_on = render_states_[D3DRS_SCISSORTESTENABLE] != FALSE;
+    bool rects = Count > 0 && pRects;
+    if (vp_partial || rects || sc_on) {
+      static std::set<std::string> seen;
+      char sig[192];
+      snprintf(sig, sizeof(sig), "flags=%lx rt=%ux%u vp=%lu,%lu %lux%lu rects=%lu%s%s", (unsigned long)Flags, rtw, rth,
+               (unsigned long)viewport_.X, (unsigned long)viewport_.Y, (unsigned long)viewport_.Width,
+               (unsigned long)viewport_.Height, (unsigned long)(rects ? Count : 0), sc_on ? " scissor" : "",
+               current_rt_.ptr() == backbuffer_.ptr() ? " backbuffer" : "");
+      if (seen.size() < 40 && seen.insert(sig).second)
+        Logger::warn(str::format("d9mt partial clear (cleared FULL surface instead): ", sig,
+                                 rects ? str::format(" rect0=", pRects[0].x1, ",", pRects[0].y1, "-", pRects[0].x2, ",", pRects[0].y2) : std::string()));
     }
   }
 
