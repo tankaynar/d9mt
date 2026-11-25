@@ -964,12 +964,19 @@ static void compileFFPixelShader(
     ConstantFP::get(floatTy, 1.0), ConstantFP::get(floatTy, 1.0),
     ConstantFP::get(floatTy, 1.0), ConstantFP::get(floatTy, 1.0)});
 
+  // D3DTA_TEXTURE on a stage with no texture bound reads (0,0,0,1) like DXVK (was white). GTA SA's ped pipeline
+  // sets stage 1 = CURRENT + TEXTURE * TFACTOR (shine/env term) and leaves the texture unbound for peds without an
+  // env map: white added 0.2 to every ped pixel (pale CJ indoors).
+  auto *noTexture = ConstantVector::get({
+    ConstantFP::get(floatTy, 0.0), ConstantFP::get(floatTy, 0.0),
+    ConstantFP::get(floatTy, 0.0), ConstantFP::get(floatTy, 1.0)});
+
   auto resolveArg = [&](uint8_t arg, uint32_t stage) -> Value * {
     Value *val;
     switch (arg & 0x0F) { // mask off modifier bits
     case FF_TA_DIFFUSE:  val = diffuse; break;
     case FF_TA_CURRENT:  val = current; break;
-    case FF_TA_TEXTURE:  val = texSamples[stage] ? texSamples[stage] : white; break;
+    case FF_TA_TEXTURE:  val = texSamples[stage] ? texSamples[stage] : noTexture; break;
     case FF_TA_TFACTOR:  val = texFactor; break;
     case FF_TA_SPECULAR: val = specular; break;
     case FF_TA_TEMP:     val = temp; break;
@@ -994,7 +1001,7 @@ static void compileFFPixelShader(
     };
     switch (op) {
     case FF_TOP_BLENDTEXTUREALPHAPM: { // arg1 + arg2 * (1 - texture.a)
-      auto *tex = texSamples[stage] ? texSamples[stage] : white;
+      auto *tex = texSamples[stage] ? texSamples[stage] : noTexture;
       return saturate(builder, builder.CreateFAdd(arg1,
         builder.CreateFMul(arg2, builder.CreateFSub(one, alphaSplat(tex)))));
     }

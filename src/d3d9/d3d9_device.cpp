@@ -3254,7 +3254,11 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
   else o += str::format(" ps=FF op0=", texture_stage_states_[0][D3DTSS_COLOROP], "/", texture_stage_states_[0][D3DTSS_COLORARG1], "/",
       texture_stage_states_[0][D3DTSS_COLORARG2], " aop0=", texture_stage_states_[0][D3DTSS_ALPHAOP], "/",
       texture_stage_states_[0][D3DTSS_ALPHAARG1], "/", texture_stage_states_[0][D3DTSS_ALPHAARG2], " op1=",
-      texture_stage_states_[1][D3DTSS_COLOROP], " tfactor=", std::hex, render_states_[D3DRS_TEXTUREFACTOR], std::dec);
+      texture_stage_states_[1][D3DTSS_COLOROP], "/", texture_stage_states_[1][D3DTSS_COLORARG1], "/",
+      texture_stage_states_[1][D3DTSS_COLORARG2], "/a0=", texture_stage_states_[1][D3DTSS_COLORARG0], " aop1=",
+      texture_stage_states_[1][D3DTSS_ALPHAOP], " res1=", texture_stage_states_[1][D3DTSS_RESULTARG], " op2=",
+      texture_stage_states_[2][D3DTSS_COLOROP], " spec=", render_states_[D3DRS_SPECULARENABLE], " light=",
+      render_states_[D3DRS_LIGHTING], " tfactor=", std::hex, render_states_[D3DRS_TEXTUREFACTOR], std::dec);
   o += str::format(" blend=", render_states_[D3DRS_ALPHABLENDENABLE], ":", render_states_[D3DRS_SRCBLEND], "/",
       render_states_[D3DRS_DESTBLEND], "/", render_states_[D3DRS_BLENDOP], " atest=", render_states_[D3DRS_ALPHATESTENABLE], ":", render_states_[D3DRS_ALPHAFUNC], "/", render_states_[D3DRS_ALPHAREF],
       " zw=", render_states_[D3DRS_ZWRITEENABLE], " zf=", render_states_[D3DRS_ZFUNC], " fog=", render_states_[D3DRS_FOGENABLE],
@@ -3294,7 +3298,7 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
     for (unsigned r = 0; r < 8; r++)
       o += str::format(" pc", r, "=(", psConstants_[r][0], ",", psConstants_[r][1], ",", psConstants_[r][2], ",", psConstants_[r][3], ")");
   if (current_vs_)
-    for (unsigned r = 0; r < 12; r++)
+    for (unsigned r = 0; r < 24; r++)
       o += str::format(" vc", r, "=(", vsConstants_[r][0], ",", vsConstants_[r][1], ",", vsConstants_[r][2], ",", vsConstants_[r][3], ")");
   const uint8_t *vdata = (const uint8_t *)up;
   UINT stride = upStride;
