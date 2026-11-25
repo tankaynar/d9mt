@@ -135,6 +135,20 @@ static void compileVertexShader(
     if (dcl.usage != DxsoUsage::Color) continue;
     defineVsOutput(dcl);
   }
+  // D3D9 lets a pixel shader read colours/texcoords the vertex shader never writes (they read as defaults);
+  // Metal refuses to link such a pair. Declare every standard varying the VS doesn't write (zero-filled:
+  // retVal starts as all-zero). GTA SA mods hit this on every frame (black world).
+  {
+    std::set<std::pair<DxsoUsage, uint32_t>> have;
+    for (auto &dcl : shader->outputDecls)
+      have.insert({dcl.usage, dcl.usageIndex});
+    auto pad = [&](DxsoUsage usage, uint32_t index, const char *prefix) {
+      if (have.count({usage, index})) return;
+      func_sig.DefineOutput(OutputVertex{.user = prefix + std::to_string(index), .type = msl_float4});
+    };
+    for (uint32_t i = 0; i < 8; i++) pad(DxsoUsage::Texcoord, i, "TEXCOORD");
+    for (uint32_t i = 0; i < 2; i++) pad(DxsoUsage::Color, i, "COLOR");
+  }
   if (position_out_idx == ~0u) {
     // If no explicit position DCL, assume o0 = position (SM2 and below)
     position_out_idx = func_sig.DefineOutput(OutputPosition{.type = msl_float4});
@@ -1184,6 +1198,8 @@ static void compilePixelShader(
 
   // Pre-scan for Def instructions
   std::unordered_map<uint32_t, std::array<float, 4>> psDefConstants;
+  std::unordered_map<uint32_t, std::array<int32_t, 4>> psDefInts;
+  std::unordered_map<uint32_t, bool> psDefBools;
   {
     DxsoDecoder defScan(shader->fullTokens.data());
     DxsoInstructionContext defCtx;
@@ -1193,9 +1209,38 @@ static void compilePixelShader(
           defCtx.def.float32[0], defCtx.def.float32[1],
           defCtx.def.float32[2], defCtx.def.float32[3]
         };
+      } else if (defCtx.instruction.opcode == DxsoOpcode::DefI) {
+        psDefInts[defCtx.dst.id.num] = {defCtx.def.int32[0], defCtx.def.int32[1],
+                                        defCtx.def.int32[2], defCtx.def.int32[3]};
+      } else if (defCtx.instruction.opcode == DxsoOpcode::DefB) {
+        psDefBools[defCtx.dst.id.num] = defCtx.def.uint32[0] != 0;
       }
     }
   }
+
+  // Structured flow control (SM2.x/3): if/ifc/else/endif, rep/endrep, break/breakc. Registers are allocas,
+  // so plain basic blocks suffice. Loop counts come from defi constants (runtime SetPixelShaderConstantI is
+  // not supported; an undefined i# runs the body once).
+  struct CfFrame {
+    bool isLoop;
+    BasicBlock *elseBB = nullptr, *mergeBB = nullptr; // if
+    BasicBlock *headerBB = nullptr, *exitBB = nullptr; // rep
+    Value *counter = nullptr;
+    bool hasElse = false;
+  };
+  std::vector<CfFrame> cfStack;
+  auto cfCompare = [&](uint32_t ctl, Value *a, Value *b) -> Value * {
+    switch (ctl) {
+    case 1: return builder.CreateFCmpOGT(a, b);
+    case 2: return builder.CreateFCmpOEQ(a, b);
+    case 3: return builder.CreateFCmpOGE(a, b);
+    case 4: return builder.CreateFCmpOLT(a, b);
+    case 5: return builder.CreateFCmpUNE(a, b);
+    case 6: return builder.CreateFCmpOLE(a, b);
+    default: return builder.getFalse();
+    }
+  };
+  auto newBlock = [&](const char *name) { return BasicBlock::Create(context, name, function); };
 
   // Lambda to load source register
   auto loadSrc = [&](const DxsoRegister &reg) -> Value * {
@@ -1371,7 +1416,98 @@ static void compilePixelShader(
     case DxsoOpcode::Dcl:
     case DxsoOpcode::Comment:
     case DxsoOpcode::Def:
+    case DxsoOpcode::DefI:
+    case DxsoOpcode::DefB:
       break;
+
+    case DxsoOpcode::If:
+    case DxsoOpcode::Ifc: {
+      Value *cond;
+      if (psInst.instruction.opcode == DxsoOpcode::Ifc) {
+        auto *a = builder.CreateExtractElement(loadSrc(psInst.src[0]), builder.getInt32(0));
+        auto *b = builder.CreateExtractElement(loadSrc(psInst.src[1]), builder.getInt32(0));
+        cond = cfCompare(psInst.instruction.control, a, b);
+      } else {
+        auto it = psDefBools.find(psInst.src[0].id.num);
+        cond = builder.getInt1(it == psDefBools.end() ? true : it->second);
+      }
+      CfFrame f{.isLoop = false};
+      auto *thenBB = newBlock("if_then");
+      f.elseBB = newBlock("if_else");
+      f.mergeBB = newBlock("if_merge");
+      builder.CreateCondBr(cond, thenBB, f.elseBB);
+      builder.SetInsertPoint(thenBB);
+      cfStack.push_back(f);
+      break;
+    }
+    case DxsoOpcode::Else: {
+      if (cfStack.empty() || cfStack.back().isLoop) break;
+      auto &f = cfStack.back();
+      builder.CreateBr(f.mergeBB);
+      builder.SetInsertPoint(f.elseBB);
+      f.hasElse = true;
+      break;
+    }
+    case DxsoOpcode::EndIf: {
+      if (cfStack.empty() || cfStack.back().isLoop) break;
+      auto f = cfStack.back();
+      cfStack.pop_back();
+      builder.CreateBr(f.mergeBB);
+      if (!f.hasElse) {
+        builder.SetInsertPoint(f.elseBB);
+        builder.CreateBr(f.mergeBB);
+      }
+      builder.SetInsertPoint(f.mergeBB);
+      break;
+    }
+    case DxsoOpcode::Rep: {
+      auto it = psDefInts.find(psInst.src[0].id.num);
+      int32_t count = it == psDefInts.end() ? 1 : std::max(0, std::min(it->second[0], 255));
+      CfFrame f{.isLoop = true};
+      {
+        IRBuilder<> entryB(&function->getEntryBlock(), function->getEntryBlock().begin());
+        f.counter = entryB.CreateAlloca(builder.getInt32Ty(), nullptr, "rep_counter");
+      }
+      builder.CreateStore(builder.getInt32(0), f.counter);
+      f.headerBB = newBlock("rep_header");
+      auto *bodyBB = newBlock("rep_body");
+      f.exitBB = newBlock("rep_exit");
+      builder.CreateBr(f.headerBB);
+      builder.SetInsertPoint(f.headerBB);
+      auto *c = builder.CreateLoad(builder.getInt32Ty(), f.counter);
+      builder.CreateCondBr(builder.CreateICmpSLT(c, builder.getInt32(count)), bodyBB, f.exitBB);
+      builder.SetInsertPoint(bodyBB);
+      cfStack.push_back(f);
+      break;
+    }
+    case DxsoOpcode::EndRep: {
+      if (cfStack.empty() || !cfStack.back().isLoop) break;
+      auto f = cfStack.back();
+      cfStack.pop_back();
+      auto *c = builder.CreateLoad(builder.getInt32Ty(), f.counter);
+      builder.CreateStore(builder.CreateAdd(c, builder.getInt32(1)), f.counter);
+      builder.CreateBr(f.headerBB);
+      builder.SetInsertPoint(f.exitBB);
+      break;
+    }
+    case DxsoOpcode::Break:
+    case DxsoOpcode::BreakC: {
+      // innermost loop
+      BasicBlock *exitBB = nullptr;
+      for (auto it = cfStack.rbegin(); it != cfStack.rend(); ++it)
+        if (it->isLoop) { exitBB = it->exitBB; break; }
+      if (!exitBB) break;
+      auto *cont = newBlock("break_cont");
+      if (psInst.instruction.opcode == DxsoOpcode::BreakC) {
+        auto *a = builder.CreateExtractElement(loadSrc(psInst.src[0]), builder.getInt32(0));
+        auto *b = builder.CreateExtractElement(loadSrc(psInst.src[1]), builder.getInt32(0));
+        builder.CreateCondBr(cfCompare(psInst.instruction.control, a, b), exitBB, cont);
+      } else {
+        builder.CreateBr(exitBB);
+      }
+      builder.SetInsertPoint(cont);
+      break;
+    }
 
     case DxsoOpcode::Mov:
       storeDst(psInst.dst, loadSrc(psInst.src[0]));

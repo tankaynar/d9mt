@@ -58,6 +58,7 @@ struct DxsoRegister {
 struct DxsoInstruction {
   DxsoOpcode opcode;
   uint32_t tokenLength;
+  uint32_t control = 0; // instruction-specific bits 16-23 (e.g. comparison of ifc/breakc/setp)
 };
 
 constexpr uint32_t DxsoMaxSrcRegs = 4;
@@ -137,6 +138,7 @@ inline bool DxsoDecoder::decodeInstruction(DxsoInstructionContext &ctx) {
 
   ctx.instruction.opcode = static_cast<DxsoOpcode>(token & 0x0000ffff);
   ctx.instruction.tokenLength = decodeInstructionLength(token, ctx.instruction.opcode);
+  ctx.instruction.control = (token >> 16) & 0xff;
 
   if (ctx.instruction.opcode == DxsoOpcode::End)
     return false;
@@ -177,10 +179,20 @@ inline bool DxsoDecoder::decodeInstruction(DxsoInstructionContext &ctx) {
     return true;
   }
   default: {
-    // Generic: first token is dst, rest are src
+    // Generic: first token is dst, rest are src. Flow-control instructions have source operands only.
+    bool noDst = false;
+    switch (ctx.instruction.opcode) {
+    case DxsoOpcode::If: case DxsoOpcode::Ifc: case DxsoOpcode::Rep: case DxsoOpcode::Loop:
+    case DxsoOpcode::BreakC: case DxsoOpcode::BreakP: case DxsoOpcode::Call: case DxsoOpcode::CallNz:
+    case DxsoOpcode::Label:
+      noDst = true;
+      break;
+    default:
+      break;
+    }
     uint32_t srcIdx = 0;
     for (uint32_t i = 0; i < remaining; i++) {
-      if (i == 0) {
+      if (i == 0 && !noDst) {
         decodeRegister(ctx.dst, iter_.read(), true);
       } else {
         if (srcIdx < DxsoMaxSrcRegs) {
