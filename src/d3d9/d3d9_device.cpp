@@ -2170,7 +2170,13 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
   if (!prev || memcmp(&cap.vp, &prev->vp, sizeof(D3DVIEWPORT9)) != 0) {
     auto &setvp = ctx.encodeRenderCommand<wmtcmd_render_setviewport>();
     setvp.type = WMTRenderCommandSetViewport;
-    setvp.viewport = {(double)cap.vp.X, (double)cap.vp.Y, (double)cap.vp.Width, (double)cap.vp.Height,
+    // D3D9 puts pixel centres at integer coordinates, Metal at +0.5. Games compensate (full-screen / render-to-
+    // texture quads shifted by -0.5), so shift the viewport by half a pixel like wined3d/DXVK; the small bias keeps
+    // edges that land exactly on a pixel centre on the D3D9 side of the fill rule. Without it every blur/copy pass
+    // was half a pixel off and left an edge row/column unwritten (GTA SA ped shadows: dark lines, split blob).
+    static const bool no_half_pixel = [] { const char *v = getenv("D9MT_NO_HALFPIXEL"); return v && *v == '1'; }();
+    const double cf = no_half_pixel ? 0.0 : 0.5 - 1.0 / 128.0;
+    setvp.viewport = {(double)cap.vp.X + cf, (double)cap.vp.Y + cf, (double)cap.vp.Width, (double)cap.vp.Height,
                       (double)cap.vp.MinZ, (double)cap.vp.MaxZ};
   }
 
