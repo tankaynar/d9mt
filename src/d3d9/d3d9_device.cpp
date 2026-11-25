@@ -1460,14 +1460,28 @@ static WMT::Reference<WMT::Function> CompileDxsoVertexShaderWithLayout(
   return function;
 }
 
+// Size of a D3D9 shader token stream up to and including the END token (0x0000FFFF). Comment blocks
+// (constant tables, compiler strings) carry arbitrary data and SM2+ instructions encode their length, so both are
+// skipped as a whole; a plain "first token with low word 0xFFFF" scan stopped inside comments and handed the
+// decoder a truncated shader (garbage opcodes with GTA SA mods).
+static size_t DxsoBytecodeSize(const DWORD *code) {
+  const uint32_t *p = (const uint32_t *)code;
+  uint32_t major = (p[0] >> 8) & 0xff;
+  p++; // version token
+  for (;;) {
+    uint32_t tok = *p;
+    if (tok == 0x0000FFFF) { p++; break; }
+    if ((tok & 0xFFFF) == 0xFFFE) { p += 1 + ((tok >> 16) & 0x7FFF); continue; }
+    if (major >= 2) { p += 1 + ((tok >> 24) & 0x0F); continue; }
+    p++; // SM1: no length field; parameter tokens never equal END
+  }
+  return (size_t)((const uint8_t *)p - (const uint8_t *)code);
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) { D9MT_TRACE();
   if (!pFunction || !ppShader) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
-  // Scan for END token to determine DXSO bytecode size
-  const uint32_t *p = (const uint32_t *)pFunction;
-  while ((*p & 0xffff) != 0xffff) p++;
-  p++; // include END token
-  size_t bytecodeSize = (size_t)((const uint8_t *)p - (const uint8_t *)pFunction);
+  size_t bytecodeSize = DxsoBytecodeSize(pFunction);
 
   dxso_shader_t shader = nullptr;
   sm50_error_t err = nullptr;
@@ -1501,11 +1515,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetVertexShader(IDirect3DVertexShader9 **p
 HRESULT STDMETHODCALLTYPE D3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) { D9MT_TRACE();
   if (!pFunction || !ppShader) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
-  // Scan for END token
-  const uint32_t *p = (const uint32_t *)pFunction;
-  while ((*p & 0xffff) != 0xffff) p++;
-  p++;
-  size_t bytecodeSize = (size_t)((const uint8_t *)p - (const uint8_t *)pFunction);
+  size_t bytecodeSize = DxsoBytecodeSize(pFunction);
 
   dxso_shader_t shader = nullptr;
   sm50_error_t err = nullptr;
