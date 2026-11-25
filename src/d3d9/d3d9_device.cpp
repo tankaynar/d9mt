@@ -2796,7 +2796,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
     uint32_t stage = __builtin_ctz(mask);
     auto *tex = bound_textures_[stage].ptr();
-    if (tex->isAnyDirty()) {
+    if (tex && tex->isAnyDirty()) {
       auto &queue = dxmt_device_->queue();
       tex->uploadDirtyLevelsStaged(tex->texture(), queue);
     }
@@ -2814,6 +2814,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
       uint32_t stage = __builtin_ctz(mask);
       auto *tex = bound_textures_[stage].ptr();
+      if (!tex) continue;
       shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture(), tex->viewKey(), stage};
 
       SamplerKey samplerKey;
@@ -4177,6 +4178,12 @@ HRESULT STDMETHODCALLTYPE D3D9StateBlock::Apply() { D9MT_TRACE();
     device_->stream_strides_[i] = stream_strides[i];
     device_->bound_textures_[i] = textures[i];
   }
+  // Keep the bound-stage mask in sync with the restored textures (a stale bit with a null texture crashed the
+  // next draw in BuildDrawCapture; GTA SA mods apply state blocks).
+  device_->tex_bound_mask_ = 0;
+  for (int i = 0; i < 16; i++)
+    if (textures[i])
+      device_->tex_bound_mask_ |= (1u << i);
   device_->current_ib_ = ib;
   // Bump all dirty flags since state was restored by memcpy (bypassing setters)
   device_->pso_dirty_ = true;
