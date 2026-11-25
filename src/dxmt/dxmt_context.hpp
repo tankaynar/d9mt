@@ -1,5 +1,6 @@
 #pragma once
 
+#include "d9mt_allocstats.hpp"
 #include "Metal.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_command.hpp"
@@ -785,6 +786,7 @@ private:
 
     chunk() {
       ptr = malloc(kEncodingContextCPUHeapSize);
+      d9mt_allocstats::add(d9mt_allocstats::EncCtxChunk, kEncodingContextCPUHeapSize);
       underused_times = 0;
     }
     chunk(const chunk &copy) = delete;

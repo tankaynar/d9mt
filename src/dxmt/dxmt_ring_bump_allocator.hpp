@@ -6,6 +6,8 @@
 #include "util_math.hpp"
 #include "wsi_platform.hpp"
 #include "dxmt_placed_pool.hpp"
+#include "d9mt_allocstats.hpp"
+#include <type_traits>
 #include <mutex>
 #include <queue>
 
@@ -253,6 +255,14 @@ RingBumpState<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
       WARN("forced to allocate new block of size ", block_size);
     }
     break;
+  }
+  {
+    using namespace d9mt_allocstats;
+    Category c = RingBlockOther;
+    if constexpr (std::is_same_v<Allocator, HostBufferBlockAllocator>) c = RingBlockHost;
+    else if constexpr (std::is_same_v<Allocator, StagingBufferBlockAllocator>)
+      c = BlockSize == 0x400000 ? RingBlockArgbuf : (BlockSize == kStagingBlockSize ? RingBlockStaging : RingBlockOther);
+    add(c, block_size);
   }
   fifo.push({
       .allocated_size = 0,

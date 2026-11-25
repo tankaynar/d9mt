@@ -1,5 +1,6 @@
 #pragma once
 
+#include "d9mt_allocstats.hpp"
 #include "com/com_object.hpp"
 #include "d3d9_trace.hpp"
 #include "dxmt_texture.hpp"
@@ -35,6 +36,7 @@ public:
       mip.pitch = D3D9FormatPitch(format, mipW);
       mip.dataSize = D3D9FormatMipSize(format, mipW, mipH);
       mip.data = std::malloc(mip.dataSize + kGuardBytes);
+      d9mt_allocstats::add(d9mt_allocstats::TexMip, mip.dataSize + kGuardBytes);
       std::memset(mip.data, 0, mip.dataSize);
       std::memset(static_cast<uint8_t *>(mip.data) + mip.dataSize, 0xCD, kGuardBytes);
       mip.dirty = false;

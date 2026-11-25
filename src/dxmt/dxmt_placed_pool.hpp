@@ -14,6 +14,7 @@
 #include "Metal.hpp"
 #include "thread.hpp"
 #include "wsi_platform.hpp"
+#include "d9mt_allocstats.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -59,6 +60,7 @@ acquire(size_t size, WMTResourceOptions options, Entry &out) {
   auto it = s.free.find(key(size, options));
   if (it == s.free.end() || it->second.empty()) {
     s.misses++;
+    d9mt_allocstats::add(d9mt_allocstats::PoolMiss, size);
     return false;
   }
   out = std::move(it->second.back());

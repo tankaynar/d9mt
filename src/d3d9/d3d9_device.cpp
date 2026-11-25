@@ -3102,8 +3102,10 @@ void D3D9Device::UpdateStatistics(const FrameStatisticsContainer &statistics, ui
                              " encode_flush=", ms(avg.encode_flush_interval), " commit=", ms(avg.commit_interval), " draws=", avg.d3d9_draw_count, " drawsUP=", avg.d3d9_draw_up_count, " flushes=", avg.d3d9_batch_flush_count, " psoMiss=", avg.d3d9_pso_miss_count));
   if (frame_id % 60 == 0)
     ::d9mt_trace::dump_and_reset();
-  if (frame_id % 600 == 0)
+  if (frame_id % 600 == 0) {
     dxmt::placed_pool::log_stats();
+    d9mt_allocstats::log_and_reset();
+  }
 
   // Encoder thread
   snprintf(buf, sizeof(buf), "-- Encoder --");
