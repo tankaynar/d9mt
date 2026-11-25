@@ -1,3 +1,6 @@
+#include <chrono>
+#include "dxmt_placed_pool.hpp"
+#include <cstdio>
 #include <cstring>
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
@@ -23,15 +26,43 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
     suballocation_count_ = DXMT_PAGE_SIZE / suballocation_size_;
     info_.length = DXMT_PAGE_SIZE;
   }
+  bool from_pool = false;
+#ifdef DXMT_PERF
+  auto d9_t0 = std::chrono::steady_clock::now();
+  auto d9_t1 = d9_t0;
+#endif
   if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
     // Round up and add a spare page: D3D9 games (e.g. RenderWare/GTA SA) may write slightly past
     // a vertex buffer's end, which real drivers tolerate; without slack this corrupts the CRT heap.
     size_t placed_size = ((info_.length + DXMT_PAGE_SIZE - 1) / DXMT_PAGE_SIZE + 1) * DXMT_PAGE_SIZE;
-    placed_buffer = wsi::aligned_malloc(placed_size, DXMT_PAGE_SIZE);
+    // Reuse a pooled (memory, MTLBuffer) pair: freeing Metal-wrapped memory and reusing it stalls for seconds.
+    placed_pool::Entry pooled;
+    if (placed_pool::acquire(info_.length, info_.options, pooled)) {
+      placed_buffer = pooled.memory;
+      obj_ = std::move(pooled.buffer);
+      info_.gpu_address = pooled.gpu_address;
+      from_pool = true;
+    } else {
+      placed_buffer = wsi::aligned_malloc(placed_size, DXMT_PAGE_SIZE);
+    }
     std::memset(placed_buffer, 0, placed_size);
     info_.memory.set(placed_buffer);
   }
-  obj_ = device.newBuffer(info_);
+#ifdef DXMT_PERF
+  d9_t1 = std::chrono::steady_clock::now();
+#endif
+  if (!from_pool)
+    obj_ = device.newBuffer(info_);
+#ifdef DXMT_PERF
+  {
+    auto d9_t2 = std::chrono::steady_clock::now();
+    double ms_mem = std::chrono::duration<double, std::milli>(d9_t1 - d9_t0).count();
+    double ms_mtl = std::chrono::duration<double, std::milli>(d9_t2 - d9_t1).count();
+    if (ms_mem > 20 || ms_mtl > 20)
+      fprintf(stderr, "d9mt slow bufalloc: len=%llu malloc+memset=%.1fms newBuffer=%.1fms placed=%p\n",
+              (unsigned long long)info_.length, ms_mem, ms_mtl, placed_buffer);
+  }
+#endif
   gpuAddress_ = info_.gpu_address;
   mappedMemory_ = info_.memory.get_accessible_or_null();
   depkey = EncoderDepSet::generateNewKey(global_buffer_seq.fetch_add(1));
@@ -39,7 +70,8 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
 
 BufferAllocation::~BufferAllocation() {
   if (placed_buffer) {
-    wsi::aligned_free(placed_buffer);
+    // hand memory + MTLBuffer back to the pool instead of freeing (see dxmt_placed_pool.hpp)
+    placed_pool::release({placed_buffer, (size_t)info_.length, info_.options, std::move(obj_), gpuAddress_});
     placed_buffer = nullptr;
   }
 }

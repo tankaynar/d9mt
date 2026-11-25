@@ -15,6 +15,7 @@
 #include "dxmt_command_queue.hpp"
 #include "dxmt_shader_cache.hpp"
 #include "dxmt_context.hpp"
+#include "dxmt_placed_pool.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_presenter.hpp"
 #include "log/log.hpp"
@@ -24,6 +25,8 @@
 #include "wsi_window.hpp"
 
 namespace dxmt {
+static double es_t0();
+static DWORD WINAPI d9mt_watchdog_thread(void *);
 
 static D3DMATRIX IdentityMatrix() {
   D3DMATRIX m = {};
@@ -260,6 +263,11 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
   material_.Power = 0.0f;
 
   Logger::info("D3D9Device: created successfully");
+  if (!env::getEnvVar("D9MT_WATCHDOG").empty()) {
+    es_t0();
+    CloseHandle(CreateThread(nullptr, 0, d9mt_watchdog_thread, nullptr, 0, nullptr));
+    Logger::info("D3D9Device: watchdog thread started");
+  }
   // Debug: D9MT_WAIT_SECONDS=N pauses here so a debugger can attach.
   if (auto w = env::getEnvVar("D9MT_WAIT_SECONDS"); !w.empty()) {
     Logger::info(str::format("D3D9Device: waiting ", w, "s for debugger (pid ", GetCurrentProcessId(), ")"));
@@ -1950,6 +1958,27 @@ struct EmitState {
 namespace { double g_es_t[6]; unsigned g_es_maxtex = 0, g_es_maxviews = 0; }
 static inline double es_now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 // d9mt diag: time a write into the mapped argument buffer; when slow, describe the page and re-time.
+// d9mt diag: D9MT_WATCHDOG=1 starts a thread that every ~5 ms (a) sleeps, (b) writes its own private page,
+// (c) does a VirtualAlloc/touch/VirtualFree cycle. Any step >20 ms is logged with a timestamp, so stalls of
+// the encoder thread can be compared: simultaneous = process-wide (Wine/Rosetta), otherwise page-specific.
+static double es_t0() { static double t0 = es_now(); return t0; }
+static DWORD WINAPI d9mt_watchdog_thread(void *) {
+  static volatile char page[4096];
+  (void)page[0];
+  for (unsigned long i = 0;; i++) {
+    double a = es_now(); Sleep(5);
+    double b = es_now(); page[(i * 64) & 4095] = (char)i;
+    double c = es_now();
+    volatile char *v = (volatile char *)VirtualAlloc(nullptr, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (v) { v[0] = 1; v[4096] = 1; VirtualFree((void *)v, 0, MEM_RELEASE); }
+    double d = es_now();
+    if (b - a > 25 || c - b > 20 || d - c > 20)
+      fprintf(stderr, "d9mt watchdog t=%.0f: sleep5=%.1fms touch=%.1fms valloc=%.1fms\n", a - es_t0(), b - a, c - b, d - c);
+    if (i % 2000 == 0)
+      fprintf(stderr, "d9mt watchdog alive t=%.0f unix=%lld\n", a - es_t0(), (long long)time(nullptr));
+  }
+  return 0;
+}
 static void es_probe_write(const char *what, void *dst, const void *src, size_t n, void *base) {
   double a = es_now();
   memcpy(dst, src, n);
@@ -1962,9 +1991,9 @@ static void es_probe_write(const char *what, void *dst, const void *src, size_t 
     double d = es_now();
     volatile char *pg = (volatile char *)(((uintptr_t)dst + 4096) & ~(uintptr_t)4095);
     double e = es_now(); (void)pg[0]; double f = es_now();
-    fprintf(stderr, "d9mt slow write %s: %.1fms dst=%p base=%p off=%lu n=%u | again=%.3fms readnext=%.3fms | "
+    fprintf(stderr, "d9mt slow write t=%.0f %s: %.1fms dst=%p base=%p off=%lu n=%u | again=%.3fms readnext=%.3fms | "
             "mbi base=%p alloc=%p size=%lu state=%lx protect=%lx type=%lx tid=%lu\n",
-            what, b - a, dst, base, (unsigned long)((char *)dst - (char *)base), (unsigned)n, d - c, f - e,
+            a - es_t0(), what, b - a, dst, base, (unsigned long)((char *)dst - (char *)base), (unsigned)n, d - c, f - e,
             mbi.BaseAddress, mbi.AllocationBase, (unsigned long)mbi.RegionSize, mbi.State, mbi.Protect, mbi.Type,
             (unsigned long)GetCurrentThreadId());
   }
@@ -3073,6 +3102,8 @@ void D3D9Device::UpdateStatistics(const FrameStatisticsContainer &statistics, ui
                              " encode_flush=", ms(avg.encode_flush_interval), " commit=", ms(avg.commit_interval), " draws=", avg.d3d9_draw_count, " drawsUP=", avg.d3d9_draw_up_count, " flushes=", avg.d3d9_batch_flush_count, " psoMiss=", avg.d3d9_pso_miss_count));
   if (frame_id % 60 == 0)
     ::d9mt_trace::dump_and_reset();
+  if (frame_id % 600 == 0)
+    dxmt::placed_pool::log_stats();
 
   // Encoder thread
   snprintf(buf, sizeof(buf), "-- Encoder --");

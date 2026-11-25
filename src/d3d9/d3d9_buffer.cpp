@@ -53,7 +53,14 @@ HRESULT STDMETHODCALLTYPE D3D9VertexBuffer::Lock(
     dxmt::Flags<BufferAllocationFlag> allocFlags;
     allocFlags.set(BufferAllocationFlag::CpuPlaced);
     auto new_alloc = buffer_->allocate(allocFlags);
+#ifdef DXMT_PERF
+    auto d9_c0 = clock::now();
+#endif
     memcpy(new_alloc->mappedMemory(0), allocation_->mappedMemory(0), length_);
+#ifdef DXMT_PERF
+    if (double ms = std::chrono::duration<double, std::milli>(clock::now() - d9_c0).count(); ms > 20)
+      fprintf(stderr, "d9mt slow lock-copy: len=%u %.1fms\n", length_, ms);
+#endif
     allocation_ = std::move(new_alloc);
     buffer_->rename(Rc(allocation_));
   }
@@ -129,7 +136,14 @@ HRESULT STDMETHODCALLTYPE D3D9IndexBuffer::Lock(
     dxmt::Flags<BufferAllocationFlag> allocFlags;
     allocFlags.set(BufferAllocationFlag::CpuPlaced);
     auto new_alloc = buffer_->allocate(allocFlags);
+#ifdef DXMT_PERF
+    auto d9_c0 = clock::now();
+#endif
     memcpy(new_alloc->mappedMemory(0), allocation_->mappedMemory(0), length_);
+#ifdef DXMT_PERF
+    if (double ms = std::chrono::duration<double, std::milli>(clock::now() - d9_c0).count(); ms > 20)
+      fprintf(stderr, "d9mt slow lock-copy: len=%u %.1fms\n", length_, ms);
+#endif
     allocation_ = std::move(new_alloc);
     buffer_->rename(Rc(allocation_));
   }
