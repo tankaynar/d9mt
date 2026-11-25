@@ -609,26 +609,6 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
   if (!(Flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
 
-  {
-    // D3D9 clears only the viewport (and the given rects, and the scissor rect when enabled); d9mt clears the
-    // whole surface. Log each distinct partial-clear signature so we know whether a game relies on it.
-    UINT rtw = current_rt_ ? current_rt_->width() : 0, rth = current_rt_ ? current_rt_->height() : 0;
-    bool vp_partial = viewport_.X != 0 || viewport_.Y != 0 || viewport_.Width < rtw || viewport_.Height < rth;
-    bool sc_on = render_states_[D3DRS_SCISSORTESTENABLE] != FALSE;
-    bool rects = Count > 0 && pRects;
-    if (vp_partial || rects || sc_on) {
-      static std::set<std::string> seen;
-      char sig[192];
-      snprintf(sig, sizeof(sig), "flags=%lx rt=%ux%u vp=%lu,%lu %lux%lu rects=%lu%s%s", (unsigned long)Flags, rtw, rth,
-               (unsigned long)viewport_.X, (unsigned long)viewport_.Y, (unsigned long)viewport_.Width,
-               (unsigned long)viewport_.Height, (unsigned long)(rects ? Count : 0), sc_on ? " scissor" : "",
-               current_rt_.ptr() == backbuffer_.ptr() ? " backbuffer" : "");
-      if (seen.size() < 40 && seen.insert(sig).second)
-        Logger::warn(str::format("d9mt partial clear (cleared FULL surface instead): ", sig,
-                                 rects ? str::format(" rect0=", pRects[0].x1, ",", pRects[0].y1, "-", pRects[0].x2, ",", pRects[0].y2) : std::string()));
-    }
-  }
-
   FlushDrawBatch();
 
   static const bool debugRedAll = !env::getEnvVar("D9MT_CLEAR_RED").empty();
@@ -648,6 +628,60 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
 
   auto &queue = dxmt_device_->queue();
   auto chunk = queue.CurrentChunk();
+
+  // D3D9 clears only the viewport, intersected with the scissor rect when enabled and with each given rect.
+  // (GTA SA clears colour+depth+stencil of the backbuffer with a 1024x512 viewport mid-frame; clearing the whole
+  // surface there wiped everything drawn so far = one-frame flashes of buildings/ground.)
+  {
+    UINT rtw = current_rt_ ? current_rt_->width() : 0, rth = current_rt_ ? current_rt_->height() : 0;
+    LONG bx0 = (LONG)viewport_.X, by0 = (LONG)viewport_.Y;
+    LONG bx1 = bx0 + (LONG)viewport_.Width, by1 = by0 + (LONG)viewport_.Height;
+    if (render_states_[D3DRS_SCISSORTESTENABLE]) {
+      bx0 = std::max(bx0, scissor_rect_.left);  by0 = std::max(by0, scissor_rect_.top);
+      bx1 = std::min(bx1, scissor_rect_.right); by1 = std::min(by1, scissor_rect_.bottom);
+    }
+    std::vector<RECT> rects;
+    if (Count > 0 && pRects) {
+      for (DWORD i = 0; i < Count; i++) {
+        RECT r = {std::max(bx0, pRects[i].x1), std::max(by0, pRects[i].y1),
+                  std::min(bx1, pRects[i].x2), std::min(by1, pRects[i].y2)};
+        if (r.right > r.left && r.bottom > r.top) rects.push_back(r);
+      }
+    } else if (bx1 > bx0 && by1 > by0) {
+      rects.push_back({bx0, by0, bx1, by1});
+    }
+    if (rects.empty()) return S_OK;
+    auto covers = [&](UINT w, UINT h) {
+      return rects.size() == 1 && rects[0].left <= 0 && rects[0].top <= 0 &&
+             rects[0].right >= (LONG)w && rects[0].bottom >= (LONG)h;
+    };
+    bool colorFull = !clearColor || !current_rt_ || covers(rtw, rth);
+    bool dsFull = !(clearDepth || clearStencil) || covers(depth_stencil_->width(), depth_stencil_->height());
+    if (!colorFull || !dsFull) {
+      unsigned dsFlags = (clearDepth ? 1 : 0) | (clearStencil ? 2 : 0);
+      chunk->emitcc([
+        rects = std::move(rects), r, g, b, a, Z, Stencil, dsFlags,
+        rt = clearColor ? current_rt_ : Rc<Texture>(), rt_view = current_rt_view_,
+        depth = dsFlags ? depth_stencil_ : Rc<Texture>(), depth_view = depth_stencil_view_
+      ](ArgumentEncodingContext &ctx) mutable {
+        auto run = [&](Rc<Texture> &tex, TextureViewKey view, unsigned flags, uint8_t st,
+                       const std::array<float, 4> &value) {
+          LONG w = (LONG)tex->width(view), h = (LONG)tex->height(view);
+          ctx.clear_rt_cmd.begin(tex, view, flags, st);
+          for (auto &rc : rects) {
+            LONG x0 = std::max(rc.left, 0L), y0 = std::max(rc.top, 0L);
+            LONG x1 = std::min(rc.right, w), y1 = std::min(rc.bottom, h);
+            if (x1 > x0 && y1 > y0)
+              ctx.clear_rt_cmd.clear(x0, y0, x1 - x0, y1 - y0, value);
+          }
+          ctx.clear_rt_cmd.end();
+        };
+        if (rt) run(rt, rt_view, 1, 0, {r, g, b, a});
+        if (depth) run(depth, depth_view, dsFlags, (uint8_t)Stencil, {Z, 0, 0, 0});
+      });
+      return S_OK;
+    }
+  }
 
 #ifdef DXMT_PERF
   if (clearColor && current_rt_ && current_rt_.ptr() != backbuffer_.ptr()) {
