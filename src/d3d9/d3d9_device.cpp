@@ -1990,13 +1990,21 @@ static WMTSamplerInfo ConvertD3D9SamplerState(const DWORD state[14]) {
     case D3DTADDRESS_WRAP:   return WMTSamplerAddressModeRepeat;
     case D3DTADDRESS_MIRROR: return WMTSamplerAddressModeMirrorRepeat;
     case D3DTADDRESS_CLAMP:  return WMTSamplerAddressModeClampToEdge;
-    case D3DTADDRESS_BORDER: return WMTSamplerAddressModeClampToZero;
+    case D3DTADDRESS_BORDER: return WMTSamplerAddressModeClampToBorderColor;
     default:                 return WMTSamplerAddressModeRepeat;
     }
   };
   info.s_address_mode = convertAddr(state[D3DSAMP_ADDRESSU]);
   info.t_address_mode = convertAddr(state[D3DSAMP_ADDRESSV]);
-  info.r_address_mode = convertAddr(state[D3DSAMP_ADDRESSU]); // W not commonly used for 2D
+  info.r_address_mode = convertAddr(state[D3DSAMP_ADDRESSW]);
+  // Metal only has three border colours: pick the closest to D3DSAMP_BORDERCOLOR (ARGB). Mapping every BORDER
+  // to transparent black made GTA SA's ped shadow (white border = no shadow) darken everything around it.
+  {
+    DWORD bc = state[D3DSAMP_BORDERCOLOR];
+    unsigned a = (bc >> 24) & 0xFF, lum = (((bc >> 16) & 0xFF) + ((bc >> 8) & 0xFF) + (bc & 0xFF)) / 3;
+    info.border_color = a < 128 ? WMTSamplerBorderColorTransparentBlack
+                      : (lum >= 128 ? WMTSamplerBorderColorOpaqueWhite : WMTSamplerBorderColorOpaqueBlack);
+  }
 
   info.normalized_coords = true;
   info.lod_min_clamp = 0.0f;
@@ -3840,30 +3848,31 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
   FlushDrawBatch();
   if (!pSourceSurface || !pDestSurface) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
-  // Extract GPU textures from either D3D9Surface or D3D9TextureSurface
-  auto getTexture = [](IDirect3DSurface9 *surf) -> Rc<Texture> {
+  // Extract GPU textures (and their views) from either D3D9Surface or D3D9TextureSurface
+  auto getTexture = [](IDirect3DSurface9 *surf, TextureViewKey &view) -> Rc<Texture> {
     IDirect3DTexture9 *container = nullptr;
     if (SUCCEEDED(surf->GetContainer(__uuidof(IDirect3DTexture9), (void **)&container))) {
       auto *texSurf = static_cast<D3D9TextureSurface *>(surf);
       container->Release();
+      view = texSurf->viewKey();
       return texSurf->texture();
     }
+    view = static_cast<D3D9Surface *>(surf)->viewKey();
     return static_cast<D3D9Surface *>(surf)->texture();
   };
 
-  auto srcTex = getTexture(pSourceSurface);
-  auto dstTex = getTexture(pDestSurface);
+  TextureViewKey srcView = 0, dstView = 0;
+  auto srcTex = getTexture(pSourceSurface, srcView);
+  auto dstTex = getTexture(pDestSurface, dstView);
 
   if (!srcTex || !dstTex) {
     Logger::warn("D3D9: StretchRect requires GPU-backed surfaces");
-    return D9MT_FAIL(D3DERR_INVALIDCALL);
+    return D3DERR_INVALIDCALL;
   }
 
-  // Determine source/dest regions
-  UINT sx = 0, sy = 0;
-  UINT sw = srcTex->width();
-  UINT sh = srcTex->height();
-  UINT dx = 0, dy = 0;
+  // Source / destination regions (no rect = the whole surface)
+  UINT sx = 0, sy = 0, sw = srcTex->width(), sh = srcTex->height();
+  UINT dx = 0, dy = 0, dw = dstTex->width(), dh = dstTex->height();
   if (pSourceRect) {
     sx = pSourceRect->left; sy = pSourceRect->top;
     sw = pSourceRect->right - pSourceRect->left;
@@ -3871,15 +3880,88 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
   }
   if (pDestRect) {
     dx = pDestRect->left; dy = pDestRect->top;
-    UINT dw = pDestRect->right - pDestRect->left;
-    UINT dh = pDestRect->bottom - pDestRect->top;
-    if (dw != sw || dh != sh) {
-      static bool warned = false;
-      if (!warned) {
-        Logger::warn("D3D9: StretchRect scaling not implemented, using source size");
-        warned = true;
+    dw = pDestRect->right - pDestRect->left;
+    dh = pDestRect->bottom - pDestRect->top;
+  }
+  if (!sw || !sh || !dw || !dh)
+    return S_OK;
+
+  // Scaling or format conversion: draw the source into the destination rect (e.g. SkyGfx downsamples the
+  // backbuffer for its colour filter / radiosity; a 1:1 copy left a small copy of the screen in a corner).
+  if (sw != dw || sh != dh || srcTex->pixelFormat() != dstTex->pixelFormat()) {
+    bool linear = Filter != D3DTEXF_POINT && Filter != D3DTEXF_NONE;
+    WMTPixelFormat dstFormat = dstTex->pixelFormat(dstView);
+    uint64_t psoKey = (uint64_t)dstFormat | (linear ? (1ull << 32) : 0);
+    auto &pso = stretch_pso_cache_[psoKey];
+    if (!pso) {
+      auto library = dxmt_device_->queue().cmd_library.getLibrary();
+      auto vs = library.newFunction("vs_present_quad");
+      auto fs = library.newFunction(linear ? "fs_stretch_linear" : "fs_stretch_point");
+      WMTRenderPipelineInfo info;
+      WMT::InitializeRenderPipelineInfo(info);
+      info.vertex_function = vs;
+      info.fragment_function = fs;
+      info.colors[0].pixel_format = dstFormat;
+      info.rasterization_enabled = true;
+      info.raster_sample_count = 1;
+      info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
+      WMT::Reference<WMT::Error> err;
+      pso = dxmt_device_->device().newRenderPipelineState(info, err);
+      if (!pso) {
+        Logger::err(str::format("D3D9: StretchRect PSO creation failed for format ", (uint32_t)dstFormat));
+        return D3DERR_INVALIDCALL;
       }
     }
+    float srcW = (float)srcTex->width(), srcH = (float)srcTex->height();
+    std::array<float, 4> srcRect = {sx / srcW, sy / srcH, sw / srcW, sh / srcH};
+    auto &queue = dxmt_device_->queue();
+    queue.CurrentChunk()->emitcc([
+      srcTex = std::move(srcTex), dstTex = std::move(dstTex), srcView, dstView,
+      pso = pso.handle, srcRect, dx, dy, dw, dh
+    ](ArgumentEncodingContext &ctx) mutable {
+      auto &pass_info = *ctx.startRenderPass(0, 0, 1, 0);
+      auto &color = pass_info.colors[0];
+      color.attachment = ctx.access(dstTex, dstView, DXMT_ENCODER_RESOURCE_ACESS_READWRITE);
+      color.depth_plane = 0;
+      color.load_action = WMTLoadActionLoad;
+      color.store_action = WMTStoreActionStore;
+      pass_info.render_target_width = dstTex->width();
+      pass_info.render_target_height = dstTex->height();
+      pass_info.render_target_array_length = 1;
+      pass_info.default_raster_sample_count = 1;
+
+      auto &setpso = ctx.encodeRenderCommand<wmtcmd_render_setpso>();
+      setpso.type = WMTRenderCommandSetPSO;
+      setpso.pso = pso;
+      auto &setvp = ctx.encodeRenderCommand<wmtcmd_render_setviewport>();
+      setvp.type = WMTRenderCommandSetViewport;
+      setvp.viewport = {(double)dx, (double)dy, (double)dw, (double)dh, 0.0, 1.0};
+      auto &setscr = ctx.encodeRenderCommand<wmtcmd_render_setscissorrect>();
+      setscr.type = WMTRenderCommandSetScissorRect;
+      setscr.scissor_rect = {dx, dy, dw, dh};
+      auto &view = ctx.access(srcTex, srcView, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
+      settex.type = WMTRenderCommandSetFragmentTexture;
+      settex.texture = view.texture;
+      settex.index = 0;
+      ctx.makeResident<PipelineStage::Pixel, PipelineKind::Ordinary>(srcTex.ptr(), srcView);
+      auto &setbytes = ctx.encodeRenderCommand<wmtcmd_render_setbytes>();
+      setbytes.type = WMTRenderCommandSetFragmentBytes;
+      void *temp = ctx.allocate_cpu_heap(sizeof(srcRect), 16);
+      memcpy(temp, srcRect.data(), sizeof(srcRect));
+      setbytes.bytes.set(temp);
+      setbytes.length = sizeof(srcRect);
+      setbytes.index = 0;
+      auto &draw = ctx.encodeRenderCommand<wmtcmd_render_draw>();
+      draw.type = WMTRenderCommandDraw;
+      draw.primitive_type = WMTPrimitiveTypeTriangle;
+      draw.vertex_start = 0;
+      draw.vertex_count = 3;
+      draw.instance_count = 1;
+      draw.base_instance = 0;
+      ctx.endPass();
+    });
+    return S_OK;
   }
 
   auto &queue = dxmt_device_->queue();

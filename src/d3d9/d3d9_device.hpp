@@ -541,6 +541,7 @@ private:
   // streams/offsets/types, so two layouts with the same FFVSKey must not share a shader.
   std::map<std::string, WMT::Reference<WMT::Function>> ff_vs_cache_;
   std::map<FFPSKey, WMT::Reference<WMT::Function>> ff_ps_cache_;
+  std::unordered_map<uint64_t, WMT::Reference<WMT::RenderPipelineState>> stretch_pso_cache_; // StretchRect scaling
 
   FFVSKey BuildFFVSKey();
   FFPSKey BuildFFPSKey();

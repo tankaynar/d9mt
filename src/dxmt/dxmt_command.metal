@@ -230,6 +230,26 @@ struct present_data {
   return output;
 }
 
+// Scaled copy (D3D9 StretchRect): vs_present_quad covers the viewport (= destination rect, scissored);
+// src_rect = (u0, v0, du, dv) in normalized source coordinates.
+[[fragment]] float4 fs_stretch_linear(
+    present_data input [[stage_in]],
+    texture2d<float, access::sample> source [[texture(0)]],
+    constant float4& src_rect [[buffer(0)]]
+) {
+  constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);
+  return source.sample(s, src_rect.xy + input.uv * src_rect.zw, level(0));
+}
+
+[[fragment]] float4 fs_stretch_point(
+    present_data input [[stage_in]],
+    texture2d<float, access::sample> source [[texture(0)]],
+    constant float4& src_rect [[buffer(0)]]
+) {
+  constexpr sampler s(coord::normalized, filter::nearest, address::clamp_to_edge);
+  return source.sample(s, src_rect.xy + input.uv * src_rect.zw, level(0));
+}
+
 constant constexpr float PQ_M1 = 0.1593017578125;
 constant constexpr float PQ_M2 = 78.84375;
 constant constexpr float PQ_C1 = 0.8359375;
