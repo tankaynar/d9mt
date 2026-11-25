@@ -36,12 +36,12 @@ kill_game() {
 # Wine only starts rendering/processing once its window is activated (normally by a click). Activate the game's
 # macOS process programmatically (NSRunningApplication; no Accessibility permission needed).
 activate_game() {
-  local pids=($(pgrep -f 'gta_sa.exe'))
+  local pids=($(pgrep -x gta_sa.exe))
   (( ${#pids} )) || return
   osascript -l JavaScript "$REPO/tools/autotest/activate.js" $pids >/dev/null 2>&1  # best effort; the mod forces ForegroundApp
 }
 
-if pgrep -q -f 'gta_sa.exe'; then echo "game is running — quit it first"; exit 3; fi
+if pgrep -q -x gta_sa.exe; then echo "game is running — quit it first"; exit 3; fi
 [[ -f "$GAME/modloader/zz d9mt autotest/d9mt_autotest.asi" ]] || { echo "d9mt_autotest.asi not installed"; exit 3; }
 
 OUT="$REPO/bench/auto/$SCEN-$(date +%Y%m%d-%H%M%S)"
@@ -67,7 +67,7 @@ result=ok
 sleep 3
 kill_game
 sleep 2
-pgrep -q -f 'gta_sa.exe' && { kill_game; sleep 2; }
+pgrep -q -x gta_sa.exe && { kill_game; sleep 2; }
 
 cp -R "$GAME/d9mt_auto/." "$OUT/" 2>/dev/null
 cp "$LOGS/x87run.log" "$OUT/x87run.log" 2>/dev/null

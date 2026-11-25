@@ -111,7 +111,11 @@ static void tick(void) {
     }
     break;
   case 1: // wait until playing with a player ped
-    if (state == 9 && ((FindPlayerPed_t)0x56E210)(-1)) { g_phase = 2; g_frames = 0; logf_("in game, player ped present"); }
+    if (state == 9 && ((FindPlayerPed_t)0x56E210)(-1)) {
+      g_phase = 2; g_frames = 0;
+      logf_("in game, player ped present (menu+0x32 was %d)", MENU[0x32]);
+      MENU[0x32] = 0; // set by the menu's load action; the real menu clears it when it closes
+    }
     break;
   case 2: { // set up the scene (teleport once, heading/camera for a while), then settle
     void *ped = ((FindPlayerPed_t)0x56E210)(-1);

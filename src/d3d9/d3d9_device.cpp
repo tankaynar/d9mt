@@ -1334,9 +1334,25 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateIndexBuffer(
   return S_OK;
 }
 
+
+// d9mt diag: name the module containing a return address (for "who called this" logging)
+static std::string d9mt_caller(void *ra) {
+  HMODULE m = nullptr;
+  char name[MAX_PATH] = "?";
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         (LPCSTR)ra, &m) && m) {
+    GetModuleFileNameA(m, name, MAX_PATH);
+    const char *b = strrchr(name, '\\');
+    return str::format(b ? b + 1 : name, "+", std::hex, (uintptr_t)ra - (uintptr_t)m);
+  }
+  return str::format("?", std::hex, (uintptr_t)ra);
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::SetIndices(IDirect3DIndexBuffer9 *pIndexData) { D9MT_TRACE();
   if (rec_mask_) rec_mask_->ib = true;
   auto *ib = static_cast<D3D9IndexBuffer *>(pIndexData);
+  { static unsigned n = 0; if (n++ < 40) fprintf(stderr, "d9mt SetIndices %p (was %p) rec=%d from %s\n", (void *)ib,
+      (void *)current_ib_.ptr(), rec_mask_ ? 1 : 0, d9mt_caller(__builtin_return_address(0)).c_str()); }
   if (current_ib_.ptr() == ib) return S_OK;
   current_ib_ = ib;
   return S_OK;
@@ -3266,6 +3282,8 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
       " fs=", [&] { float f; memcpy(&f, &render_states_[D3DRS_FOGSTART], 4); return f; }(),
       " fe=", [&] { float f; memcpy(&f, &render_states_[D3DRS_FOGEND], 4); return f; }(),
       " fc=", std::hex, render_states_[D3DRS_FOGCOLOR], std::dec,
+      " scis=", render_states_[D3DRS_SCISSORTESTENABLE], ":", scissor_rect_.left, ",", scissor_rect_.top, "-",
+      scissor_rect_.right, ",", scissor_rect_.bottom, " clip=", render_states_[D3DRS_CLIPPING],
       " z=", render_states_[D3DRS_ZENABLE], " cull=", render_states_[D3DRS_CULLMODE], " cwm=", std::hex,
       render_states_[D3DRS_COLORWRITEENABLE], std::dec);
   for (unsigned s = 0; s < 8; s++) {
@@ -3319,6 +3337,17 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
     }
   }
   fprintf(stderr, "%s\n", o.c_str());
+  { // D9MT_TRACE_DUMP_DRAW=<n>: dump every texture bound to draw #n (all levels) during a trace
+    static const long dump_draw = [] { const char *v = getenv("D9MT_TRACE_DUMP_DRAW"); return v ? strtol(v, nullptr, 10) : -1L; }();
+    if (dump_draw >= 0 && (long)g_draw_index.load() == dump_draw) {
+      FlushDrawBatch();
+      for (unsigned st = 0; st < 8; st++)
+        if (bound_textures_[st]) {
+          char tag[16]; snprintf(tag, sizeof tag, "d%ld_s%u", dump_draw, st);
+          TraceDumpLevels(bound_textures_[st]->texture(), bound_textures_[st]->levelCount(), tag);
+        }
+    }
+  }
   if (current_ps_ && (current_ps_->trace_hash == 0x2887417a || current_ps_->trace_hash == 0xd442fd5d ||
                       current_ps_->trace_hash == 0xd136fb3c)) {
     static std::set<const void *> dumped;
@@ -3417,11 +3446,30 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     UINT MinVertexIndex, UINT NumVertices,
     UINT StartIndex, UINT PrimitiveCount) { D9MT_TRACE();
   TraceDraw("DIP", PrimitiveType, PrimitiveCount, nullptr, 0, BaseVertexIndex, MinVertexIndex);
+  if (rt_trace_on() && current_ib_ && current_ib_->allocation()) {
+    const uint8_t *ib = (const uint8_t *)current_ib_->allocation()->mappedMemory(0);
+    bool i32 = current_ib_->format() == D3DFMT_INDEX32;
+    std::string idx;
+    for (UINT k = 0; k < 6; k++) {
+      size_t off = (size_t)(StartIndex + k) * (i32 ? 4 : 2);
+      if (off + (i32 ? 4 : 2) > current_ib_->length()) break;
+      uint32_t v = i32 ? *(const uint32_t *)(ib + off) : *(const uint16_t *)(ib + off);
+      idx += str::format(k ? "," : "", v);
+    }
+    fprintf(stderr, "d9mt RT trace:   DIP base=%d min=%u num=%u start=%u ib=%p len=%u %s idx=[%s] vbstride=%u vboff=%u\n",
+            BaseVertexIndex, MinVertexIndex, NumVertices, StartIndex, (void *)current_ib_.ptr(), current_ib_->length(),
+            i32 ? "i32" : "i16", idx.c_str(), stream_strides_[0], stream_offsets_[0]);
+  }
   if (d9mt_skip_draw()) return S_OK;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_count++;
 #endif
-  if (!current_vdecl_ || !current_ib_) return D9MT_FAIL(D3DERR_INVALIDCALL);
+  if (!current_vdecl_ || !current_ib_) {
+    static unsigned n = 0;
+    if (n++ < 20) fprintf(stderr, "d9mt DIP without %s from %s\n", current_ib_ ? "vdecl" : "index buffer",
+                          d9mt_caller(__builtin_return_address(0)).c_str());
+    return D9MT_FAIL(D3DERR_INVALIDCALL);
+  }
 
   UINT indexCount = 0;
   WMTPrimitiveType mtlPrimType;
@@ -3598,11 +3646,12 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
     QueueBatchedDraw(std::move(bd));
   }
 
-  // Per D3D9 spec: clear stream source and index buffer after UP draws
+  // Per D3D9 spec: DrawPrimitiveUP resets stream 0 only (DrawIndexedPrimitiveUP also resets the index buffer).
+  // Clearing the index buffer here broke RenderWare, which caches it: after any non-indexed UP draw (SMAA quads,
+  // HUD sprites) its next indexed draw had no index buffer and failed (GTA SA HUD clock/money text missing).
   stream_sources_[0] = nullptr;
   stream_offsets_[0] = 0;
   stream_strides_[0] = 0;
-  current_ib_ = nullptr;
 
   return S_OK;
 }
