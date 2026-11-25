@@ -702,6 +702,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderState(D3DRENDERSTATETYPE State, D
     [[fallthrough]];
   case D3DRS_ALPHAREF:
   case D3DRS_FOGCOLOR: case D3DRS_FOGSTART: case D3DRS_FOGEND: case D3DRS_FOGDENSITY:
+  case D3DRS_TEXTUREFACTOR: // FF PS c[0]; was never re-uploaded (GTA SA car env map used a stale factor)
     ps_const_version_++;
     ff_const_version_++;
     ff_dirty_ |= kFFDirtyFog | kFFDirtyPS;
