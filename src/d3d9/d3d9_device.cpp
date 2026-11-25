@@ -2497,6 +2497,18 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
         }
       }
     }
+    if (!current_vs_) { // d9mt diag: every distinct FF vertex layout once (save-disk hunt: all verts collapse to one point)
+      static std::set<const void *> seen_ff;
+      if (seen_ff.size() < 60 && seen_ff.insert((const void *)current_vdecl_.ptr()).second) {
+        std::string els3;
+        for (auto &e : current_vdecl_->elements())
+          if (e.Stream != 0xFF)
+            els3 += str::format(" [s", e.Stream, " off", e.Offset, " type", (int)e.Type, " usage", (int)e.Usage, ".", (int)e.UsageIndex,
+                                " stride", stream_strides_[e.Stream < 16 ? e.Stream : 0], "]");
+        fprintf(stderr, "d9mt ff-layout #%u: decl=%p fvf=%lx tex0=%p%s\n", (unsigned)seen_ff.size(),
+                (void *)current_vdecl_.ptr(), (unsigned long)current_vdecl_->fvf(), (void *)bound_textures_[0].ptr(), els3.c_str());
+      }
+    }
     static unsigned fog_logs = 0;
     if (skinned && current_vs_ && (fog_logs < 12 || (fog_logs % 2000) == 0)) {
       auto fl = [&](D3DRENDERSTATETYPE rs) { float f; memcpy(&f, &render_states_[rs], 4); return f; };
@@ -3504,19 +3516,24 @@ FFPSKey D3D9Device::BuildFFPSKey() {
 
 WMT::Reference<WMT::Function> D3D9Device::GetOrCreateFFVS(
     const FFVSKey &key, D3D9VertexDeclaration *vdecl) {
-  auto it = ff_vs_cache_.find(key);
-  if (it != ff_vs_cache_.end())
-    return it->second;
-
   auto &elements = vdecl->elements();
   uint32_t slotMask = vdecl->slotMask();
   uint32_t numElements = elements.size() > 0 ? (uint32_t)elements.size() - 1 : 0; // exclude end sentinel
+
+  // Cache key must include the layout: a shader compiled for one layout read the wrong streams/offsets
+  // for another layout with the same FFVSKey (GTA SA: save pickup collapsed to a point, random stray triangles).
+  std::string cacheKey((const char *)&key, sizeof(key));
+  cacheKey.append((const char *)elements.data(), numElements * sizeof(D3DVERTEXELEMENT9));
+  cacheKey.append((const char *)&slotMask, sizeof(slotMask));
+  auto it = ff_vs_cache_.find(cacheKey);
+  if (it != ff_vs_cache_.end())
+    return it->second;
 
   auto func = GenerateFFVertexShader(
     dxmt_device_->device(), key, elements.data(), numElements, slotMask,
     dxmt_device_->metalVersion());
   if (func)
-    ff_vs_cache_.emplace(key, func);
+    ff_vs_cache_.emplace(std::move(cacheKey), func);
   return func;
 }
 

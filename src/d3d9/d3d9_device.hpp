@@ -534,7 +534,9 @@ private:
   BOOL cursor_visible_ = TRUE;
 
   // Fixed-function shader caches
-  std::map<FFVSKey, WMT::Reference<WMT::Function>> ff_vs_cache_;
+  // Keyed by FFVSKey bytes + vertex layout (elements + stream mask): the generated FF VS hard-codes element
+  // streams/offsets/types, so two layouts with the same FFVSKey must not share a shader.
+  std::map<std::string, WMT::Reference<WMT::Function>> ff_vs_cache_;
   std::map<FFPSKey, WMT::Reference<WMT::Function>> ff_ps_cache_;
 
   FFVSKey BuildFFVSKey();
