@@ -541,6 +541,7 @@ private:
 
   FFVSKey BuildFFVSKey();
   FFPSKey BuildFFPSKey();
+  void FillFFVSTexcoordModes(FFVSKey &key);
   WMT::Reference<WMT::Function> GetOrCreateFFVS(const FFVSKey &key, D3D9VertexDeclaration *vdecl);
   WMT::Reference<WMT::Function> GetOrCreateFFPS(const FFPSKey &key);
   void UpdateFFConstants(); // incremental update of cached_ff_vs_/ps_ using ff_dirty_

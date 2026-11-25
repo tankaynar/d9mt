@@ -869,6 +869,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetTextureStageState(DWORD Stage, D3DTEXTU
   case D3DTSS_COLOROP: case D3DTSS_COLORARG1: case D3DTSS_COLORARG2:
   case D3DTSS_ALPHAOP: case D3DTSS_ALPHAARG1: case D3DTSS_ALPHAARG2:
   case D3DTSS_TEXCOORDINDEX: case D3DTSS_TEXTURETRANSFORMFLAGS:
+  case D3DTSS_COLORARG0: case D3DTSS_ALPHAARG0: case D3DTSS_RESULTARG:
     pso_dirty_ = true;
     break;
   default:
@@ -1665,13 +1666,6 @@ obj_handle_t D3D9Device::CreatePSO() {
       // Custom PS: bump VS texcoord count to satisfy PS inputs
       if (current_ps_->maxTexcoordCount() > ffkey.tex_coord_count)
         ffkey.tex_coord_count = current_ps_->maxTexcoordCount();
-      // Re-populate TCI/TTF modes now that tex_coord_count is bumped
-      for (uint8_t i = 0; i < ffkey.tex_coord_count && i < 8; i++) {
-        DWORD tci = texture_stage_states_[i][D3DTSS_TEXCOORDINDEX];
-        ffkey.tci_modes[i] = (uint8_t)((tci >> 16) & 0x3);
-        ffkey.tci_coord_indices[i] = (uint8_t)(tci & 0x7);
-        ffkey.ttf_modes[i] = (uint8_t)(texture_stage_states_[i][D3DTSS_TEXTURETRANSFORMFLAGS] & 0x7);
-      }
     } else {
       // FF PS: bump VS texcoord count if any PS stage uses a higher texcoord_index
       auto &ffpskey = getFFPSKey();
@@ -1685,6 +1679,9 @@ obj_handle_t D3D9Device::CreatePSO() {
         }
       }
     }
+    // (Re-)populate TCI/TTF modes for the final tex_coord_count: a bumped count (e.g. GTA SA vehicle env map
+    // on stage 1 with a single UV set) otherwise left stage 1 as passthru of a non-existent coordinate.
+    FillFFVSTexcoordModes(ffkey);
     auto ff_vs = GetOrCreateFFVS(ffkey, current_vdecl_.ptr());
     vs_handle = ff_vs.handle;
     if (!vs_handle) {
@@ -3448,13 +3445,7 @@ FFVSKey D3D9Device::BuildFFVSKey() {
     }
   }
 
-  // TCI generation modes and texture transform flags per texcoord output
-  for (uint8_t i = 0; i < key.tex_coord_count && i < 8; i++) {
-    DWORD tci = texture_stage_states_[i][D3DTSS_TEXCOORDINDEX];
-    key.tci_modes[i] = (uint8_t)((tci >> 16) & 0x3); // 0=passthru, 1=normal, 2=position, 3=reflection
-    key.tci_coord_indices[i] = (uint8_t)(tci & 0x7);
-    key.ttf_modes[i] = (uint8_t)(texture_stage_states_[i][D3DTSS_TEXTURETRANSFORMFLAGS] & 0x7);
-  }
+  FillFFVSTexcoordModes(key);
 
   // Fog mode: prefer vertex fog, fall back to table fog mode
   // (table fog is normally per-pixel, but we approximate per-vertex in the FF VS)
@@ -3493,6 +3484,20 @@ FFVSKey D3D9Device::BuildFFVSKey() {
   return key;
 }
 
+void D3D9Device::FillFFVSTexcoordModes(FFVSKey &key) {
+  // TCI generation modes and texture transform flags per texcoord output (output i = stage i)
+  for (uint8_t i = 0; i < 8; i++) {
+    if (i < key.tex_coord_count) {
+      DWORD tci = texture_stage_states_[i][D3DTSS_TEXCOORDINDEX];
+      key.tci_modes[i] = (uint8_t)((tci >> 16) & 0x3); // 0=passthru, 1=normal, 2=position, 3=reflection
+      key.tci_coord_indices[i] = (uint8_t)(tci & 0x7);
+      key.ttf_modes[i] = (uint8_t)(texture_stage_states_[i][D3DTSS_TEXTURETRANSFORMFLAGS] & 0x7);
+    } else {
+      key.tci_modes[i] = key.tci_coord_indices[i] = key.ttf_modes[i] = 0;
+    }
+  }
+}
+
 FFPSKey D3D9Device::BuildFFPSKey() {
   FFPSKey key = {};
   for (uint32_t i = 0; i < 8; i++) {
@@ -3505,6 +3510,12 @@ FFPSKey D3D9Device::BuildFFPSKey() {
     stage.alpha_arg2 = (uint8_t)texture_stage_states_[i][D3DTSS_ALPHAARG2];
     stage.has_texture = bound_textures_[i] ? 1 : 0;
     stage.texcoord_index = (uint8_t)(texture_stage_states_[i][D3DTSS_TEXCOORDINDEX] & 0x7);
+    // With the FF VS, output TEXCOORD<i> already holds stage i's routed/generated/transformed coordinates
+    // (TEXCOORDINDEX low bits + TCI mode + D3DTS_TEXTUREi), so stage i must sample TEXCOORD<i>.
+    if (!current_vs_) stage.texcoord_index = (uint8_t)i;
+    stage.color_arg0 = (uint8_t)texture_stage_states_[i][D3DTSS_COLORARG0];
+    stage.alpha_arg0 = (uint8_t)texture_stage_states_[i][D3DTSS_ALPHAARG0];
+    stage.result_arg = (uint8_t)texture_stage_states_[i][D3DTSS_RESULTARG];
     if (stage.color_op == D3DTOP_DISABLE) break;
   }
   key.specular_enable = render_states_[D3DRS_SPECULARENABLE] ? 1 : 0;

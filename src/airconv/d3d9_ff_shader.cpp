@@ -73,6 +73,17 @@ enum {
   FF_TOP_BLENDTEXTUREALPHA = 13,
   FF_TOP_BLENDFACTORALPHA = 14,
   FF_TOP_BLENDCURRENTALPHA = 15,
+  FF_TOP_BLENDTEXTUREALPHAPM = 16,
+  FF_TOP_PREMODULATE = 17,
+  FF_TOP_MODULATEALPHA_ADDCOLOR = 18,
+  FF_TOP_MODULATECOLOR_ADDALPHA = 19,
+  FF_TOP_MODULATEINVALPHA_ADDCOLOR = 20,
+  FF_TOP_MODULATEINVCOLOR_ADDALPHA = 21,
+  FF_TOP_BUMPENVMAP = 22,
+  FF_TOP_BUMPENVMAPLUMINANCE = 23,
+  FF_TOP_DOTPRODUCT3 = 24,
+  FF_TOP_MULTIPLYADD = 25,
+  FF_TOP_LERP = 26,
 };
 
 // D3DTA values
@@ -82,6 +93,7 @@ enum {
   FF_TA_TEXTURE = 2,
   FF_TA_TFACTOR = 3,
   FF_TA_SPECULAR = 4,
+  FF_TA_TEMP = 5,
 };
 
 // D3DCMP values
@@ -205,6 +217,16 @@ static Value *pullVertexAttribute(
   return result;
 }
 
+// Number of components a D3DDECLTYPE supplies
+static uint32_t declTypeComponents(uint8_t t) {
+  switch (t) {
+  case 0: return 1;                 // FLOAT1
+  case 1: case 6: case 9: case 11: case 15: return 2; // FLOAT2, SHORT2, SHORT2N, USHORT2N, FLOAT16_2
+  case 2: case 13: case 14: return 3; // FLOAT3, UDEC3, DEC3N
+  default: return 4;
+  }
+}
+
 // Helper: v × M (D3D9 row-vector convention, matrix stored row-major as 4 consecutive float4s in CB)
 // result[j] = sum_i(v[i] * M[i][j])
 static Value *matMulVec4(IRBuilder<> &builder, Type *float4Ty, Type *floatTy,
@@ -320,6 +342,7 @@ static void compileFFVertexShader(
   Value *color0 = nullptr;
   Value *color1 = nullptr;
   Value *texcoords[8] = {};
+  uint8_t texcoordTypes[8] = {};
 
   for (uint32_t i = 0; i < numElements; i++) {
     auto &elem = elements[i];
@@ -347,7 +370,10 @@ static void compileFFVertexShader(
       else if (elem.usage_index == 1) color1 = val;
       break;
     case FF_DECLUSAGE_TEXCOORD:
-      if (elem.usage_index < 8) texcoords[elem.usage_index] = val;
+      if (elem.usage_index < 8) {
+        texcoords[elem.usage_index] = val;
+        texcoordTypes[elem.usage_index] = elem.type;
+      }
       break;
     default:
       break;
@@ -729,8 +755,20 @@ static void compileFFVertexShader(
     if (key->ttf_modes[i] != 0) {
       // Texture matrix at c[68 + i*4]
       uint32_t texMatBase = 68 + i * 4;
-      auto *tcW1 = builder.CreateInsertElement(tc, ConstantFP::get(floatTy, 1.0), builder.getInt32(3));
-      tc = matMulVec4(builder, float4Ty, floatTy, cbFloat4, texMatBase, tcW1);
+      // D3D9 expands the input to 4 components with the default 1.0 in the component right after the
+      // last one supplied (u -> (u,1,0,0), uv -> (u,v,1,0), uvw -> (u,v,w,1)), so for 2D coordinates the
+      // matrix's THIRD row is the translation (RenderWare UV animation, GTA SA vehicle env maps).
+      // Generated coordinates are 3-component.
+      uint32_t comps = 3;
+      if (key->tci_modes[i] == 0) {
+        uint8_t coordIdx = key->tci_coord_indices[i];
+        comps = (coordIdx < 8 && texcoords[coordIdx]) ? declTypeComponents(texcoordTypes[coordIdx]) : 4;
+      }
+      Value *tcIn = tc;
+      for (uint32_t c = comps; c < 4; c++)
+        tcIn = builder.CreateInsertElement(tcIn, ConstantFP::get(floatTy, c == comps ? 1.0 : 0.0),
+                                           builder.getInt32(c));
+      tc = matMulVec4(builder, float4Ty, floatTy, cbFloat4, texMatBase, tcIn);
     }
     retVal = builder.CreateInsertValue(retVal, tc, {texcoord_out_indices[i]});
   }
@@ -900,6 +938,7 @@ static void compileFFPixelShader(
 
   // Process texture stages
   Value *current = diffuse;
+  Value *temp = ConstantAggregateZero::get(float4Ty); // D3DTA_TEMP register, starts at 0
 
   auto *white = ConstantVector::get({
     ConstantFP::get(floatTy, 1.0), ConstantFP::get(floatTy, 1.0),
@@ -913,6 +952,7 @@ static void compileFFPixelShader(
     case FF_TA_TEXTURE:  val = texSamples[stage] ? texSamples[stage] : white; break;
     case FF_TA_TFACTOR:  val = texFactor; break;
     case FF_TA_SPECULAR: val = specular; break;
+    case FF_TA_TEMP:     val = temp; break;
     default: val = current; break;
     }
     if (arg & 0x10) { // D3DTA_COMPLEMENT
@@ -924,8 +964,54 @@ static void compileFFPixelShader(
     return val;
   };
 
-  auto applyOp = [&](uint8_t op, Value *arg1, Value *arg2, uint32_t stage) -> Value * {
+  auto applyOp = [&](uint8_t op, Value *arg0, Value *arg1, Value *arg2, uint32_t stage) -> Value * {
+    auto *one = ConstantVector::getSplat(ElementCount::getFixed(4), ConstantFP::get(floatTy, 1.0));
+    auto alphaSplat = [&](Value *v) { return builder.CreateShuffleVector(v, {3, 3, 3, 3}); };
+    // rgb from `rgb`, alpha from `a`
+    auto withAlpha = [&](Value *rgb, Value *a) {
+      return builder.CreateInsertElement(rgb, builder.CreateExtractElement(a, builder.getInt32(3)),
+                                         builder.getInt32(3));
+    };
     switch (op) {
+    case FF_TOP_BLENDTEXTUREALPHAPM: { // arg1 + arg2 * (1 - texture.a)
+      auto *tex = texSamples[stage] ? texSamples[stage] : white;
+      return saturate(builder, builder.CreateFAdd(arg1,
+        builder.CreateFMul(arg2, builder.CreateFSub(one, alphaSplat(tex)))));
+    }
+    case FF_TOP_MODULATEALPHA_ADDCOLOR: // arg1.rgb + arg1.a * arg2.rgb
+      return withAlpha(saturate(builder, builder.CreateFAdd(arg1,
+        builder.CreateFMul(alphaSplat(arg1), arg2))), arg1);
+    case FF_TOP_MODULATECOLOR_ADDALPHA: // arg1.rgb * arg2.rgb + arg1.a
+      return withAlpha(saturate(builder, builder.CreateFAdd(builder.CreateFMul(arg1, arg2),
+        alphaSplat(arg1))), arg1);
+    case FF_TOP_MODULATEINVALPHA_ADDCOLOR: // (1 - arg1.a) * arg2.rgb + arg1.rgb
+      return withAlpha(saturate(builder, builder.CreateFAdd(arg1,
+        builder.CreateFMul(builder.CreateFSub(one, alphaSplat(arg1)), arg2))), arg1);
+    case FF_TOP_MODULATEINVCOLOR_ADDALPHA: // (1 - arg1.rgb) * arg2.rgb + arg1.a
+      return withAlpha(saturate(builder, builder.CreateFAdd(
+        builder.CreateFMul(builder.CreateFSub(one, arg1), arg2), alphaSplat(arg1))), arg1);
+    case FF_TOP_DOTPRODUCT3: { // 4 * dot3(arg1 - 0.5, arg2 - 0.5), replicated to all channels
+      auto *half = ConstantVector::getSplat(ElementCount::getFixed(4), ConstantFP::get(floatTy, 0.5));
+      auto *a = builder.CreateFSub(arg1, half);
+      auto *b = builder.CreateFSub(arg2, half);
+      Value *d = nullptr;
+      for (int c = 0; c < 3; c++) {
+        auto *m = builder.CreateFMul(builder.CreateExtractElement(a, builder.getInt32(c)),
+                                     builder.CreateExtractElement(b, builder.getInt32(c)));
+        d = d ? builder.CreateFAdd(d, m) : m;
+      }
+      d = builder.CreateFMul(d, ConstantFP::get(floatTy, 4.0));
+      return saturate(builder, builder.CreateVectorSplat(4, d));
+    }
+    case FF_TOP_MULTIPLYADD: // arg0 + arg1 * arg2
+      return saturate(builder, builder.CreateFAdd(arg0, builder.CreateFMul(arg1, arg2)));
+    case FF_TOP_LERP: // arg0 * arg1 + (1 - arg0) * arg2
+      return saturate(builder, builder.CreateFAdd(builder.CreateFMul(arg0, arg1),
+        builder.CreateFMul(builder.CreateFSub(one, arg0), arg2)));
+    case FF_TOP_PREMODULATE:        // needs next stage's texture; approximate
+    case FF_TOP_BUMPENVMAP:         // not supported: pass through current
+    case FF_TOP_BUMPENVMAPLUMINANCE:
+      return current;
     case FF_TOP_SELECTARG1:
       return arg1;
     case FF_TOP_SELECTARG2:
@@ -999,19 +1085,28 @@ static void compileFFPixelShader(
     if (stg.color_op == FF_TOP_DISABLE) break;
 
     // Color operation
+    auto *carg0 = resolveArg(stg.color_arg0, stage);
     auto *carg1 = resolveArg(stg.color_arg1, stage);
     auto *carg2 = resolveArg(stg.color_arg2, stage);
-    auto *colorResult = applyOp(stg.color_op, carg1, carg2, stage);
+    auto *colorResult = applyOp(stg.color_op, carg0, carg1, carg2, stage);
 
-    // Alpha operation
-    auto *aarg1 = resolveArg(stg.alpha_arg1, stage);
-    auto *aarg2 = resolveArg(stg.alpha_arg2, stage);
-    auto *alphaResult = applyOp(stg.alpha_op, aarg1, aarg2, stage);
+    // Alpha operation (DISABLE with colour enabled keeps the current alpha)
+    Value *alphaResult = current;
+    if (stg.alpha_op != FF_TOP_DISABLE) {
+      auto *aarg0 = resolveArg(stg.alpha_arg0, stage);
+      auto *aarg1 = resolveArg(stg.alpha_arg1, stage);
+      auto *aarg2 = resolveArg(stg.alpha_arg2, stage);
+      alphaResult = applyOp(stg.alpha_op, aarg0, aarg1, aarg2, stage);
+    }
 
     // Combine: use color result RGB + alpha result A
     auto *rgb = colorResult;
     auto *a = builder.CreateExtractElement(alphaResult, builder.getInt32(3));
-    current = builder.CreateInsertElement(rgb, a, builder.getInt32(3));
+    auto *result = builder.CreateInsertElement(rgb, a, builder.getInt32(3));
+    if ((stg.result_arg & 0x0F) == FF_TA_TEMP)
+      temp = result;
+    else
+      current = result;
   }
 
   // Specular add

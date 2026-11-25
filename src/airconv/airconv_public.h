@@ -411,6 +411,9 @@ struct D3D9_FF_PS_STAGE {
   uint8_t alpha_op, alpha_arg1, alpha_arg2;
   uint8_t has_texture;
   uint8_t texcoord_index;
+  uint8_t color_arg0, alpha_arg0; /* third argument of MULTIPLYADD / LERP */
+  uint8_t result_arg;             /* D3DTA_CURRENT or D3DTA_TEMP */
+  uint8_t pad;
 };
 
 struct D3D9_FF_PS_KEY {
