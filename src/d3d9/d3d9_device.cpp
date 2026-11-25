@@ -2829,7 +2829,23 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
       uint32_t stage = __builtin_ctz(mask);
       auto *tex = bound_textures_[stage].ptr();
       if (!tex) continue;
-      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture(), tex->viewKey(), stage};
+      TextureViewKey viewKey = tex->viewKey();
+      if (sampler_states_[stage][D3DSAMP_SRGBTEXTURE]) {
+        // D3DSAMP_SRGBTEXTURE: sample through an sRGB view (decode to linear). It was ignored while
+        // SRGBWRITEENABLE was honoured, so post-process passes (WidescreenFix SMAA) encoded gamma twice.
+        WMTPixelFormat srgb = WMTPixelFormatInvalid;
+        switch (tex->texture()->pixelFormat(viewKey)) {
+        case WMTPixelFormatBGRA8Unorm: srgb = WMTPixelFormatBGRA8Unorm_sRGB; break;
+        case WMTPixelFormatRGBA8Unorm: srgb = WMTPixelFormatRGBA8Unorm_sRGB; break;
+        case WMTPixelFormatBC1_RGBA:   srgb = WMTPixelFormatBC1_RGBA_sRGB; break;
+        case WMTPixelFormatBC2_RGBA:   srgb = WMTPixelFormatBC2_RGBA_sRGB; break;
+        case WMTPixelFormatBC3_RGBA:   srgb = WMTPixelFormatBC3_RGBA_sRGB; break;
+        default: break;
+        }
+        if (srgb != WMTPixelFormatInvalid)
+          viewKey = tex->texture()->checkViewUseFormat(viewKey, srgb);
+      }
+      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture(), viewKey, stage};
 
       SamplerKey samplerKey;
       memcpy(samplerKey.state, sampler_states_[stage], sizeof(samplerKey.state));
