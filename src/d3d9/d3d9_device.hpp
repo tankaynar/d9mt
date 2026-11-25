@@ -455,6 +455,7 @@ private:
   ShaderConstants *current_const_snapshot_ = nullptr;
   uint64_t snapshot_vs_version_ = ~0ULL;
   uint64_t snapshot_ps_version_ = ~0ULL;
+  uint16_t snapshot_vs_count_ = 0, snapshot_ps_count_ = 0;
 
   // Persistent FF VS constant buffer — only changed sections updated per draw
   // FF VS constants; layout shared with airconv d3d9_ff_shader.cpp (c[100+i] = light i specular)

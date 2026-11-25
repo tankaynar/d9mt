@@ -2173,8 +2173,12 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
   // Write VS/PS constants — skip copy and reuse previous offset when version matches
   constexpr uint64_t PS_CONST_BUF_SIZE = 256 * 4 * sizeof(float);
 
-  bool reuse_vs = prev && cap.vs_const_version == prev->vs_const_version;
-  bool reuse_ps = prev && cap.ps_const_version == prev->ps_const_version;
+  // Reuse only if the previous upload covered every register this draw reads (same constants, but a shader using
+  // more registers than the previous one would otherwise read stale argbuf data).
+  bool reuse_vs = prev && cap.vs_const_version == prev->vs_const_version &&
+                  cap.vs_const_count <= prev->vs_const_count;
+  bool reuse_ps = prev && cap.ps_const_version == prev->ps_const_version &&
+                  cap.ps_const_count <= prev->ps_const_count;
 
   if (!reuse_vs) {
     auto *vs_const_dst = ctx.getMappedArgumentBuffer<char>(argbuf_base + cap.vb_region_size);
@@ -2608,8 +2612,11 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   cap.vs_const_count = vs_const_count; // already computed for argbuf sizing
   cap.ps_const_count = current_ps_ ? (uint16_t)std::min(current_ps_->maxConstantReg(), 256u) : 3;
 
+  // A snapshot only holds the registers that were copied into it: a shader switch to one reading more registers
+  // (same constant version) needs a fresh snapshot too.
   bool need_new_snapshot = (cap.vs_const_version != snapshot_vs_version_) ||
-                           (cap.ps_const_version != snapshot_ps_version_);
+                           (cap.ps_const_version != snapshot_ps_version_) ||
+                           cap.vs_const_count > snapshot_vs_count_ || cap.ps_const_count > snapshot_ps_count_;
   if (need_new_snapshot) {
     auto *snap = &snapshot_ring_[snapshot_ring_head_++ % kSnapshotRingSize];
     if (current_vs_) {
@@ -2643,6 +2650,8 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     }
     snapshot_vs_version_ = cap.vs_const_version;
     snapshot_ps_version_ = cap.ps_const_version;
+    snapshot_vs_count_ = current_vs_ ? cap.vs_const_count : (uint16_t)kFFVSConstCount;
+    snapshot_ps_count_ = current_ps_ ? cap.ps_const_count : (uint16_t)3;
     current_const_snapshot_ = snap;
   }
   cap.constants = current_const_snapshot_;
