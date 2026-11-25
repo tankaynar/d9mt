@@ -65,8 +65,8 @@ public:
   HRESULT STDMETHODCALLTYPE GetRasterStatus(UINT, D3DRASTER_STATUS *) final { return D3DERR_INVALIDCALL; }
 
   HRESULT STDMETHODCALLTYPE SetDialogBoxMode(BOOL) final { return D3DERR_INVALIDCALL; }
-  void STDMETHODCALLTYPE SetGammaRamp(UINT, DWORD, const D3DGAMMARAMP *) final {}
-  void STDMETHODCALLTYPE GetGammaRamp(UINT, D3DGAMMARAMP *) final {}
+  void STDMETHODCALLTYPE SetGammaRamp(UINT iSwapChain, DWORD Flags, const D3DGAMMARAMP *pRamp) final;
+  void STDMETHODCALLTYPE GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp) final;
 
   // Texture creation
   HRESULT STDMETHODCALLTYPE CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
@@ -304,6 +304,7 @@ public:
   void FlushDrawBatch();
   // d9mt diag: D9MT_TRACE_RT=1, press F7 in game -> log 2 frames of small-RT draws (see TraceDraw)
   void TraceDumpTexture(const Rc<Texture> &tex, const char *tag);
+  void TraceDumpLevels(const Rc<Texture> &tex, UINT levels, const char *tag);
   void TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, const void *up, UINT upStride, INT baseVertex, UINT start);
   void QueueBatchedDraw(BatchedDraw &&draw);
   void BeginOcclusionQuery(Rc<VisibilityResultQuery> query);
@@ -331,6 +332,10 @@ private:
   WMT::MetalLayer layer_weak_;
   Rc<Presenter> presenter_;
   HUDState hud_;
+  // Device gamma ramp (D3D9 applies it in fullscreen); resampled to the presenter's LUT
+  D3DGAMMARAMP d3d_gamma_ramp_ = {};
+  DXMTGammaRamp gamma_ramp_ = {};
+  bool gamma_ramp_set_ = false;
 
   Rc<Texture> backbuffer_;
   TextureViewKey backbuffer_view_ = 0;

@@ -371,6 +371,13 @@ BOOL STDMETHODCALLTYPE D3D9Device::ShowCursor(BOOL bShow) { D9MT_TRACE();
   return prev;
 }
 
+// d9mt experiment: D9MT_BB_X8=1 treats the backbuffer like X8R8G8B8 (alpha never written, always 1), as wined3d's
+// macOS drawable appears to. GTA SA's PC colour filter weights its additive grade by the copied screen's alpha.
+static bool d9mt_bb_x8() {
+  static const bool on = [] { const char *v = getenv("D9MT_BB_X8"); return v && *v == '1'; }();
+  return on;
+}
+
 HRESULT D3D9Device::CreateBackbuffer(UINT width, UINT height) {
   WMTTextureInfo info = {};
   info.pixel_format = WMTPixelFormatBGRA8Unorm;
@@ -397,6 +404,13 @@ HRESULT D3D9Device::CreateBackbuffer(UINT width, UINT height) {
   });
 
   backbuffer_surface_ = new D3D9Surface(this, backbuffer_, backbuffer_view_);
+  if (d9mt_bb_x8()) {
+    // X8 backbuffer emulation: alpha must read 1 everywhere, including areas the game never colour-clears
+    // (GTA SA only clears depth full-screen, plus a 1024x512 colour region). Draws never write alpha after this.
+    dxmt_device_->queue().CurrentChunk()->emitcc([rt = backbuffer_, view = backbuffer_view_](ArgumentEncodingContext &ctx) mutable {
+      ctx.clearColor(std::move(rt), view, 1, {0.0f, 0.0f, 0.0f, 1.0f});
+    });
+  }
   return S_OK;
 }
 
@@ -543,11 +557,11 @@ std::atomic<int> g_rt_trace_frames{0};
 bool g_rt_trace_key_down = false;
 std::unordered_map<const void *, int> g_rt_trace_rts; // textures used as small RTs in the traced frames
 bool rt_trace_on() {
-  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '1'; }();
+  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && (*v == '1' || *v == '2'); }();
   return on && g_rt_trace_frames.load() > 0;
 }
 void rt_trace_present() {
-  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '1'; }();
+  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && (*v == '1' || *v == '2'); }();
   if (!on) return;
   int left = g_rt_trace_frames.load();
   if (left > 0) {
@@ -662,6 +676,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
   float g = ((Color >> 8) & 0xFF) / 255.0f;
   float b = ((Color >> 0) & 0xFF) / 255.0f;
   float a = ((Color >> 24) & 0xFF) / 255.0f;
+  if (d9mt_bb_x8() && current_rt_.ptr() == backbuffer_.ptr()) a = 1.0f; // X8 backbuffer: alpha always 1
 
   bool clearStencil = (Flags & D3DCLEAR_STENCIL) != 0 && depth_stencil_;
 
@@ -777,6 +792,10 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderState(D3DRENDERSTATETYPE State, D
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_state_change_count++;
 #endif
   if (State >= 256) return D9MT_FAIL(D3DERR_INVALIDCALL);
+  { // d9mt experiment: D9MT_NO_FOG=1 ignores fog entirely (A/B for the washed-out look vs wined3d)
+    static const bool no_fog = [] { const char *v = getenv("D9MT_NO_FOG"); return v && *v == '1'; }();
+    if (no_fog && State == D3DRS_FOGENABLE) Value = FALSE;
+  }
   if (render_states_[State] == Value) return S_OK; // no-op: skip dirty tracking
   render_states_[State] = Value;
 
@@ -991,6 +1010,13 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
     mipLevels = (UINT)std::floor(std::log2((double)std::max(Width, Height))) + 1;
 
   bool isRenderTarget = (Usage & D3DUSAGE_RENDERTARGET) != 0;
+
+  { // d9mt diag: which textures rely on driver-generated mips / full chains (first 64)
+    static unsigned n = 0;
+    if ((Levels == 0 || (Usage & D3DUSAGE_AUTOGENMIPMAP)) && n++ < 64)
+      fprintf(stderr, "d9mt tex-create: %ux%u Levels=%u -> %u usage=%#lx fmt=%d pool=%d\n", Width, Height, Levels,
+              mipLevels, (unsigned long)Usage, (int)Format, (int)Pool);
+  }
 
   WMTTextureInfo info = {};
   info.pixel_format = mtlFormat;
@@ -1923,6 +1949,7 @@ obj_handle_t D3D9Device::CreatePSO() {
   DWORD depthFmt = depth_stencil_ ? (DWORD)depth_stencil_format_ : 0;
   bool srgbWrite = render_states_[D3DRS_SRGBWRITEENABLE] != 0;
   uint8_t colorWriteMask = (uint8_t)(render_states_[D3DRS_COLORWRITEENABLE] & 0xF);
+  if (d9mt_bb_x8() && current_rt_.ptr() == backbuffer_.ptr()) colorWriteMask &= 0x7; // X8 backbuffer: keep alpha 1
 
   PSOKey key = {vs_handle, ps_handle, current_vdecl_.ptr(),
                 blendEnable, srcBlend, destBlend, blendOp, srcBlendAlpha,
@@ -3004,7 +3031,7 @@ static void d9mt_check_rhw(D3D9VertexDeclaration *vdecl, const uint8_t *base, UI
 
 // d9mt diag: synchronous readback of a small BGRA8 texture (mip 0) to d9mt_rt\NNN_tag_ptr_WxH.bgra
 void D3D9Device::TraceDumpTexture(const Rc<Texture> &tex, const char *tag) {
-  if (!tex || tex->width() > 256 || tex->height() > 256) return;
+  if (!tex || tex->width() > 2048 || tex->height() > 2048) return;
   auto fmt = tex->pixelFormat();
   if (fmt != WMTPixelFormatBGRA8Unorm && fmt != WMTPixelFormatRGBA8Unorm) return;
   static unsigned seq = 0;
@@ -3036,6 +3063,53 @@ void D3D9Device::TraceDumpTexture(const Rc<Texture> &tex, const char *tag) {
   wsi::aligned_free(mem);
 }
 
+
+// d9mt diag: dump every mip level (raw: BGRA8/RGBA8, R8, BC1/2/3 blocks) to d9mt_rt\mips_tag_ptr_fmt_L<n>_WxH.raw
+void D3D9Device::TraceDumpLevels(const Rc<Texture> &tex, UINT levels, const char *tag) {
+  if (!tex) return;
+  auto fmt = tex->pixelFormat();
+  UINT bpp = 0, block = 1, blockBytes = 0;
+  switch (fmt) {
+  case WMTPixelFormatBGRA8Unorm: case WMTPixelFormatRGBA8Unorm: bpp = 4; break;
+  case WMTPixelFormatR8Unorm: bpp = 1; break;
+  case WMTPixelFormatBC1_RGBA: block = 4; blockBytes = 8; break;
+  case WMTPixelFormatBC2_RGBA: case WMTPixelFormatBC3_RGBA: block = 4; blockBytes = 16; break;
+  default: fprintf(stderr, "d9mt RT trace:   mips skip fmt=%d\n", (int)fmt); return;
+  }
+  CreateDirectoryA("d9mt_rt", nullptr);
+  for (UINT lv = 0; lv < levels; lv++) {
+    UINT w = std::max(tex->width() >> lv, 1u), h = std::max(tex->height() >> lv, 1u);
+    UINT bpr = block > 1 ? ((w + 3) / 4) * blockBytes : w * bpp;
+    UINT rows = block > 1 ? (h + 3) / 4 : h;
+    UINT total = bpr * rows, aligned = (total + 0xFFF) & ~0xFFFu;
+    void *mem = wsi::aligned_malloc(aligned, DXMT_PAGE_SIZE);
+    if (!mem) return;
+    memset(mem, 0xCD, aligned);
+    WMTBufferInfo bi = {};
+    bi.length = aligned;
+    bi.options = WMTResourceStorageModeShared;
+    bi.memory.set(mem);
+    auto buf = dxmt_device_->device().newBuffer(bi);
+    auto &queue = dxmt_device_->queue();
+    queue.CurrentChunk()->emitcc([src = tex, bh = buf.handle, w, h, bpr, total, lv](ArgumentEncodingContext &ctx) mutable {
+      ctx.startBlitPass();
+      auto sh = ctx.access(src, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto &b = ctx.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+      b.type = WMTBlitCommandCopyFromTextureToBuffer;
+      b.src = sh; b.slice = 0; b.level = lv; b.origin = {0, 0, 0}; b.size = {w, h, 1};
+      b.dst = bh; b.offset = 0; b.bytes_per_row = bpr; b.bytes_per_image = total;
+      ctx.endPass();
+    });
+    queue.CommitCurrentChunk();
+    queue.WaitForIdle();
+    char name[160];
+    snprintf(name, sizeof(name), "d9mt_rt\\mips_%s_%p_f%d_L%u_%ux%u.raw", tag, (void *)tex.ptr(), (int)fmt, lv, w, h);
+    if (FILE *f = fopen(name, "wb")) { fwrite(mem, 1, total, f); fclose(f); }
+    wsi::aligned_free(mem);
+  }
+  fprintf(stderr, "d9mt RT trace:   mips dumped %s %p fmt=%d levels=%u\n", tag, (void *)tex.ptr(), (int)fmt, levels);
+}
+
 void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, const void *up, UINT upStride,
                            INT baseVertex, UINT start) {
   if (!rt_trace_on() || !current_rt_) return;
@@ -3045,7 +3119,8 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
   bool readsTracedRT = false;
   for (unsigned s = 0; s < 8; s++)
     if (bound_textures_[s] && g_rt_trace_rts.count(bound_textures_[s]->texture().ptr())) readsTracedRT = true;
-  if (!smallRT && !readsTracedRT) return;
+  static const bool all_draws = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '2'; }();
+  if (!smallRT && !readsTracedRT && !all_draws) return;
   if (smallRT) g_rt_trace_rts[rt]++;
   std::string o = str::format("d9mt RT trace: ", kind, " pt=", (int)pt, " prims=", prims, " rt=", rt, " ",
       current_rt_->width(), "x", current_rt_->height(), " vp=", viewport_.X, ",", viewport_.Y, " ", viewport_.Width, "x",
@@ -3058,13 +3133,19 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
       texture_stage_states_[0][D3DTSS_ALPHAARG1], "/", texture_stage_states_[0][D3DTSS_ALPHAARG2], " op1=",
       texture_stage_states_[1][D3DTSS_COLOROP], " tfactor=", std::hex, render_states_[D3DRS_TEXTUREFACTOR], std::dec);
   o += str::format(" blend=", render_states_[D3DRS_ALPHABLENDENABLE], ":", render_states_[D3DRS_SRCBLEND], "/",
-      render_states_[D3DRS_DESTBLEND], "/", render_states_[D3DRS_BLENDOP], " atest=", render_states_[D3DRS_ALPHATESTENABLE],
+      render_states_[D3DRS_DESTBLEND], "/", render_states_[D3DRS_BLENDOP], " atest=", render_states_[D3DRS_ALPHATESTENABLE], ":", render_states_[D3DRS_ALPHAFUNC], "/", render_states_[D3DRS_ALPHAREF],
+      " zw=", render_states_[D3DRS_ZWRITEENABLE], " zf=", render_states_[D3DRS_ZFUNC], " fog=", render_states_[D3DRS_FOGENABLE],
+      ":t", render_states_[D3DRS_FOGTABLEMODE], "v", render_states_[D3DRS_FOGVERTEXMODE], "r", render_states_[D3DRS_RANGEFOGENABLE],
+      " fs=", [&] { float f; memcpy(&f, &render_states_[D3DRS_FOGSTART], 4); return f; }(),
+      " fe=", [&] { float f; memcpy(&f, &render_states_[D3DRS_FOGEND], 4); return f; }(),
+      " fc=", std::hex, render_states_[D3DRS_FOGCOLOR], std::dec,
       " z=", render_states_[D3DRS_ZENABLE], " cull=", render_states_[D3DRS_CULLMODE], " cwm=", std::hex,
       render_states_[D3DRS_COLORWRITEENABLE], std::dec);
   for (unsigned s = 0; s < 8; s++) {
     if (!bound_textures_[s]) continue;
     auto *t = bound_textures_[s].ptr();
-    o += str::format(" t", s, "=", (void *)t->texture().ptr(), " ", t->width(), "x", t->height(), " addr=",
+    o += str::format(" t", s, "=", (void *)t->texture().ptr(), " ", t->width(), "x", t->height(), " L", t->levelCount(),
+        " maxmip=", sampler_states_[s][D3DSAMP_MAXMIPLEVEL], " bias=", std::hex, sampler_states_[s][D3DSAMP_MIPMAPLODBIAS], std::dec, " addr=",
         sampler_states_[s][D3DSAMP_ADDRESSU], "/", sampler_states_[s][D3DSAMP_ADDRESSV], " filt=",
         sampler_states_[s][D3DSAMP_MINFILTER], "/", sampler_states_[s][D3DSAMP_MAGFILTER], "/",
         sampler_states_[s][D3DSAMP_MIPFILTER], g_rt_trace_rts.count(t->texture().ptr()) ? " (RT)" : "");
@@ -3099,7 +3180,7 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
             (size_t)(baseVertex + (INT)start) * stream_strides_[0];
     stride = stream_strides_[0];
   }
-  if (vdata && stride && prims <= 4) {
+  if (vdata && stride) {
     for (unsigned v = 0; v < 4; v++) {
       o += str::format(" v", v, "=[");
       for (unsigned k = 0; k < std::min<UINT>(stride / 4, 8); k++) {
@@ -3110,6 +3191,14 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
     }
   }
   fprintf(stderr, "%s\n", o.c_str());
+  if (current_ps_ && (current_ps_->trace_hash == 0x2887417a || current_ps_->trace_hash == 0xd442fd5d ||
+                      current_ps_->trace_hash == 0xd136fb3c)) {
+    static std::set<const void *> dumped;
+    FlushDrawBatch();
+    for (unsigned st = 0; st < 3; st++)
+      if (bound_textures_[st] && dumped.insert(bound_textures_[st]->texture().ptr()).second)
+        TraceDumpLevels(bound_textures_[st]->texture(), bound_textures_[st]->levelCount(), st == 0 ? "s0" : st == 1 ? "s1" : "s2");
+  }
   if (bound_textures_[0] && (readsTracedRT || (viewport_.Width <= 128 && viewport_.Height <= 128))) {
     FlushDrawBatch();
     TraceDumpTexture(bound_textures_[0]->texture(), "in_t0");
@@ -3486,6 +3575,53 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
 }
 
 // Present
+
+// Gamma ramp: D3D9 applies the device gamma ramp to the display in fullscreen. GTA SA sets one (brightness
+// setting); it was ignored (empty stub), so d9mt looked brighter/flatter than wined3d, whose macOS driver applies it.
+// D9MT_NO_GAMMA=1 restores the old behaviour.
+void STDMETHODCALLTYPE D3D9Device::SetGammaRamp(UINT iSwapChain, DWORD Flags, const D3DGAMMARAMP *pRamp) { D9MT_TRACE();
+  if (!pRamp || iSwapChain != 0) return;
+  d3d_gamma_ramp_ = *pRamp;
+  static unsigned logs = 0;
+  if (logs++ < 6) {
+    auto f = [&](const WORD *c) {
+      return str::format(c[0], ",", c[32], ",", c[64], ",", c[96], ",", c[128], ",", c[160], ",", c[192], ",", c[224], ",", c[255]);
+    };
+    Logger::info(str::format("d9mt SetGammaRamp flags=", Flags, " R=[", f(pRamp->red), "] G=[", f(pRamp->green), "] B=[",
+                             f(pRamp->blue), "] (0..65535 at inputs 0,32,..,255)"));
+  }
+  static const bool no_gamma = [] { const char *v = getenv("D9MT_NO_GAMMA"); return v && *v == '1'; }();
+  if (no_gamma) return;
+  bool identity = true;
+  for (unsigned i = 0; i < 256 && identity; i++) {
+    WORD id = (WORD)(i * 257);
+    if (std::abs((int)pRamp->red[i] - id) > 256 || std::abs((int)pRamp->green[i] - id) > 256 ||
+        std::abs((int)pRamp->blue[i] - id) > 256)
+      identity = false;
+  }
+  for (uint32_t i = 0; i < DXMT_GAMMA_CP_COUNT; i++) {
+    float x = (float)i * 255.0f / (float)(DXMT_GAMMA_CP_COUNT - 1);
+    uint32_t i0 = (uint32_t)x, i1 = std::min(i0 + 1, 255u);
+    float t = x - (float)i0;
+    auto lerp = [&](const WORD *c) { return ((1.0f - t) * c[i0] + t * c[i1]) / 65535.0f; };
+    gamma_ramp_.red[i] = lerp(pRamp->red);
+    gamma_ramp_.green[i] = lerp(pRamp->green);
+    gamma_ramp_.blue[i] = lerp(pRamp->blue);
+  }
+  gamma_ramp_.version++;
+  gamma_ramp_set_ = !identity && !present_params_.Windowed;
+}
+
+void STDMETHODCALLTYPE D3D9Device::GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp) { D9MT_TRACE();
+  if (!pRamp) return;
+  bool any = false;
+  for (unsigned i = 0; i < 256; i++) any |= d3d_gamma_ramp_.red[i] != 0;
+  if (!any)
+    for (unsigned i = 0; i < 256; i++)
+      d3d_gamma_ramp_.red[i] = d3d_gamma_ramp_.green[i] = d3d_gamma_ramp_.blue[i] = (WORD)(i * 257);
+  *pRamp = d3d_gamma_ramp_;
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *) { D9MT_TRACE();
   rt_trace_present();
@@ -3528,6 +3664,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
   auto &queue = dxmt_device_->queue();
   auto chunk = queue.CurrentChunk();
 
+  presenter_->changeGammaRamp(gamma_ramp_set_ ? &gamma_ramp_ : nullptr);
   chunk->emitcc([
     this,
     state = presenter_->synchronizeLayerProperties(),
