@@ -663,17 +663,34 @@ static void compileFFVertexShader(
   }
 
   // --- Fog ---
+  // fog_mode: 1=EXP 2=EXP2 3=LINEAR; bit 0x80 (pretransformed vertices only) = table (pixel) fog is active.
   Value *fogFactor = nullptr;
-  if (key->fog_mode != 0 && !key->has_position_t) {
+  const uint8_t fogMode = key->fog_mode & 0x7F;
+  const bool fogTable = (key->fog_mode & 0x80) != 0;
+  Value *fogCoord = nullptr;
+  if (fogMode != 0 && !key->has_position_t) {
+    fogCoord = air.CreateFPUnOp(air.fabs, builder.CreateExtractElement(posEye, builder.getInt32(2)));
+  } else if (fogMode != 0 && fogTable) {
+    // D3D9, pretransformed vertices + table fog: the fog coordinate is the screen-space z (GTA SA's 2D passes use
+    // z = 0 => no fog). Previously no factor was computed for XYZRHW and FOG0 stayed 0 = fully fogged: the black
+    // border GTA draws around its real-time shadow raster came out sky-coloured => dark patches around peds.
+    fogCoord = air.CreateFPUnOp(air.fabs, builder.CreateExtractElement(position, builder.getInt32(2)));
+  } else if (fogMode != 0) {
+    // D3D9, pretransformed vertices + vertex fog: the application supplies the factor in the specular alpha.
+    // Without a specular colour there is nothing to fog by: factor 1 (no fog).
+    fogFactor = key->has_color1 ? builder.CreateExtractElement(color1, builder.getInt32(3))
+                                : (Value *)ConstantFP::get(floatTy, 1.0);
+    fogFactor = saturate(builder, fogFactor);
+  }
+  if (fogCoord) {
     auto *fogParams = builder.CreateLoad(float4Ty,
       builder.CreateConstGEP1_32(float4Ty, cbFloat4, 21));
     auto *fogStart = builder.CreateExtractElement(fogParams, builder.getInt32(0));
     auto *fogEnd = builder.CreateExtractElement(fogParams, builder.getInt32(1));
     auto *fogDensity = builder.CreateExtractElement(fogParams, builder.getInt32(2));
-    auto *eyeZ = air.CreateFPUnOp(air.fabs,
-      builder.CreateExtractElement(posEye, builder.getInt32(2)));
+    auto *eyeZ = fogCoord;
 
-    switch (key->fog_mode) {
+    switch (fogMode) {
     case 1: // EXP
       fogFactor = air.CreateFPUnOp(air.exp2,
         builder.CreateFMul(ConstantFP::get(floatTy, -1.442695f), // -1/ln(2)
@@ -692,7 +709,7 @@ static void compileFFVertexShader(
         builder.CreateFSub(fogEnd, fogStart));
       break;
     }
-    fogFactor = saturate(builder, fogFactor);
+    if (fogFactor) fogFactor = saturate(builder, fogFactor);
   }
 
   // Build return value

@@ -15,6 +15,16 @@ CaptureState::CaptureState() {
     return;
   WARN("DXMT capture enabled");
   state = State::Idle;
+#ifdef _WIN32
+  // d9mt diag: DXMT_CAPTURE_KEY=<VK code, e.g. 0x77 for F8> (default F10; SkyGfx uses F10)
+  std::string key = env::getEnvVar("DXMT_CAPTURE_KEY");
+  if (!key.empty()) {
+    try {
+      capture_key_ = (int)std::stoul(key, nullptr, 0);
+    } catch (...) {
+    }
+  }
+#endif
 }
 
 CaptureState::NextAction
@@ -54,7 +64,7 @@ CaptureState::shouldCaptureNextFrame() {
 #ifdef _WIN32
   if (state != State::Idle)
     return false;
-  SHORT state_ = GetAsyncKeyState(VK_F10);
+  SHORT state_ = GetAsyncKeyState(capture_key_);
   if (state_ & 0x8000 && !capture_key_pressed_) {
     capture_key_pressed_ = true;
     return true;

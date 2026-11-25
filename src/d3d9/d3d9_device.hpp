@@ -302,6 +302,9 @@ public:
   };
 
   void FlushDrawBatch();
+  // d9mt diag: D9MT_TRACE_RT=1, press F7 in game -> log 2 frames of small-RT draws (see TraceDraw)
+  void TraceDumpTexture(const Rc<Texture> &tex, const char *tag);
+  void TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, const void *up, UINT upStride, INT baseVertex, UINT start);
   void QueueBatchedDraw(BatchedDraw &&draw);
   void BeginOcclusionQuery(Rc<VisibilityResultQuery> query);
   void EndOcclusionQuery(Rc<VisibilityResultQuery> query);

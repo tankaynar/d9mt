@@ -108,6 +108,7 @@ public:
 
   dxso_shader_t handle() const { return shader_; }
   uint8_t maxTexcoordCount() const { return maxTexcoordCount_; }
+  uint32_t trace_hash = 0; // d9mt diag: FNV-1a of the bytecode (= D9MT_DUMP_SHADERS file name)
   uint32_t maxConstantReg() const { return maxConstantReg_; }
   const Sha1Digest &sha1() const { return sha1_; }
 

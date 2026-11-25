@@ -27,6 +27,44 @@ def reg(tok):
     return f"{REG.get(t, f'type{t}')}{tok & 0x7ff}"
 
 
+COMP = "xyzw"
+SRCMOD = {0: "{}", 1: "-{}", 2: "{}_bias", 3: "-{}_bias", 4: "{}_bx2", 5: "-{}_bx2", 6: "{}_x2", 7: "-{}_x2",
+          8: "{}_dz", 9: "{}_dw", 10: "{}_abs", 11: "-{}_abs", 12: "!{}"}
+CMP = {1: "gt", 2: "eq", 3: "ge", 4: "lt", 5: "ne", 6: "le"}
+
+
+def dst(tok):
+    m = (tok >> 16) & 0xF
+    mask = "" if m == 0xF else "." + "".join(COMP[k] for k in range(4) if m >> k & 1)
+    mod = (tok >> 20) & 0xF
+    shift = (tok >> 24) & 0xF
+    sfx = ("_sat" if mod & 1 else "") + ("_pp" if mod & 2 else "") + ("_centroid" if mod & 4 else "")
+    if shift:
+        sfx += {1: "_x2", 2: "_x4", 3: "_x8", 15: "_d2", 14: "_d4", 13: "_d8"}.get(shift, f"_shift{shift}")
+    return sfx, reg(tok) + mask
+
+
+def src(tok, rel=None):
+    sw = (tok >> 16) & 0xFF
+    comps = [COMP[(sw >> (2 * k)) & 3] for k in range(4)]
+    swz = "".join(comps)
+    if swz == "xyzw":
+        swz = ""
+    elif len(set(comps)) == 1:
+        swz = "." + comps[0]
+    else:
+        swz = "." + swz
+    r = reg(tok)
+    if rel is not None:
+        r = f"{r}[{reg(rel)}]"
+    return SRCMOD.get((tok >> 24) & 0xF, "{}?").format(r + swz)
+
+
+def f32(x):
+    v = struct.unpack("<f", struct.pack("<I", x))[0]
+    return f"{v:.6g}"
+
+
 def main():
     data = open(sys.argv[1], "rb").read()
     decl_only = "--decl-only" in sys.argv
@@ -56,17 +94,36 @@ def main():
         if op == 31:
             d, r = params[0], params[1]
             if ((r & 0x1800) >> 8 | (r & 0x70000000) >> 28) == 10:
+                print(f"  dcl_{ {2: '2d', 3: 'cube', 4: 'volume'}.get((d >> 27) & 0xF, (d >> 27) & 0xF)} {reg(r)}")
+            elif kind == "ps" and major < 3:
+                print(f"  dcl {dst(r)[1]}")
+            elif False:
                 print(f"  dcl_sampler type{(d >> 27) & 0xF} {reg(r)}")
             else:
                 print(f"  dcl_{USAGE.get(d & 0x1F, d & 0x1F)}{(d >> 16) & 0xF} {reg(r)} mask={(r >> 16) & 0xF:x}")
         elif not decl_only:
-            if op in NOSRC_DST:
-                ops = [reg(p) for p in params]
+            sfx = ""
+            if op == 81:
+                ops = [reg(params[0])] + [f32(p) for p in params[1:]]
+            elif op in (48, 47):
+                ops = [reg(params[0])] + [str(p) for p in params[1:]]
             else:
-                ops = [reg(params[0]) + f".{(params[0] >> 16) & 0xF:x}"] + [reg(p) for p in params[1:]] if params else []
-            if op in (81, 48, 47):
-                ops = [reg(params[0])] + [hex(p) for p in params[1:]]
-            print(f"  {name}{'_c' + str(ctl) if op in (41, 45) else ''} " + ", ".join(ops))
+                srcs, k = [], 0 if op in NOSRC_DST else 1
+                if k:
+                    sfx, d = dst(params[0])
+                while k < len(params):
+                    t = params[k]
+                    rel = None
+                    if major >= 2 and t & 0x2000 and k + 1 < len(params):
+                        rel = params[k + 1]
+                        k += 1
+                    srcs.append(src(t, rel))
+                    k += 1
+                ops = ([d] if op not in NOSRC_DST else []) + srcs
+                if op == 66 and major < 2:
+                    ops = [reg(params[0])]
+            cmp = "_" + CMP.get(ctl, str(ctl)) if op in (41, 45) else ""
+            print(f"  {name}{cmp}{sfx} " + ", ".join(ops))
         i += 1 + ln
 
 

@@ -537,6 +537,39 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetBackBuffer(
   return S_OK;
 }
 
+// ---- d9mt diag: render-target trace (D9MT_TRACE_RT=1, F7 = trace the next 2 frames) ----
+namespace {
+std::atomic<int> g_rt_trace_frames{0};
+bool g_rt_trace_key_down = false;
+std::unordered_map<const void *, int> g_rt_trace_rts; // textures used as small RTs in the traced frames
+bool rt_trace_on() {
+  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '1'; }();
+  return on && g_rt_trace_frames.load() > 0;
+}
+void rt_trace_present() {
+  static const bool on = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '1'; }();
+  if (!on) return;
+  int left = g_rt_trace_frames.load();
+  if (left > 0) {
+    fprintf(stderr, "d9mt RT trace: ---- Present (frames left %d)\n", left - 1);
+    g_rt_trace_frames = left - 1;
+  }
+  bool down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
+  if (down && !g_rt_trace_key_down && left <= 0) {
+    g_rt_trace_rts.clear();
+    g_rt_trace_frames = 2;
+    fprintf(stderr, "d9mt RT trace: ==== start\n");
+  }
+  g_rt_trace_key_down = down;
+  fflush(stderr);
+}
+uint32_t shader_fnv(const uint8_t *b, uint32_t n) {
+  uint32_t h = 2166136261u;
+  for (uint32_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+  return h;
+}
+} // namespace
+
 HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) { D9MT_TRACE();
   FlushDrawBatch();
   if (RenderTargetIndex != 0) {
@@ -606,6 +639,12 @@ HRESULT STDMETHODCALLTYPE D3D9Device::EndScene() { D9MT_TRACE(); return S_OK; }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
     DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) { D9MT_TRACE();
+  if (rt_trace_on() && current_rt_)
+    fprintf(stderr, "d9mt RT trace: Clear rt=%p %llux%llu flags=%#lx color=%08lx count=%lu rect0=%ld,%ld-%ld,%ld vp=%lu,%lu %lux%lu\n",
+            (void *)current_rt_.ptr(), (unsigned long long)current_rt_->width(), (unsigned long long)current_rt_->height(),
+            Flags, Color, Count, Count && pRects ? pRects[0].x1 : -1L, Count && pRects ? pRects[0].y1 : -1L,
+            Count && pRects ? pRects[0].x2 : -1L, Count && pRects ? pRects[0].y2 : -1L, viewport_.X, viewport_.Y,
+            viewport_.Width, viewport_.Height);
   if (!(Flags & (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)))
     return S_OK;
 
@@ -1550,7 +1589,9 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreatePixelShader(const DWORD *pFunction, 
     return D9MT_FAIL(D3DERR_INVALIDCALL);
   }
 
-  *ppShader = ref(new D3D9PixelShader(shader, std::move(function), maxTexcoordCount, sha1));
+  auto *psobj = new D3D9PixelShader(shader, std::move(function), maxTexcoordCount, sha1);
+  psobj->trace_hash = shader_fnv((const uint8_t *)pFunction, (uint32_t)bytecodeSize);
+  *ppShader = ref(psobj);
   return S_OK;
 }
 
@@ -2958,8 +2999,126 @@ static void d9mt_check_rhw(D3D9VertexDeclaration *vdecl, const uint8_t *base, UI
 #endif
 
 // DrawPrimitive
+
+
+
+// d9mt diag: synchronous readback of a small BGRA8 texture (mip 0) to d9mt_rt\NNN_tag_ptr_WxH.bgra
+void D3D9Device::TraceDumpTexture(const Rc<Texture> &tex, const char *tag) {
+  if (!tex || tex->width() > 256 || tex->height() > 256) return;
+  auto fmt = tex->pixelFormat();
+  if (fmt != WMTPixelFormatBGRA8Unorm && fmt != WMTPixelFormatRGBA8Unorm) return;
+  static unsigned seq = 0;
+  UINT w = tex->width(), h = tex->height(), bpr = w * 4, total = bpr * h, aligned = (total + 0xFFF) & ~0xFFFu;
+  void *mem = wsi::aligned_malloc(aligned, DXMT_PAGE_SIZE);
+  if (!mem) return;
+  WMTBufferInfo bi = {};
+  bi.length = aligned;
+  bi.options = WMTResourceStorageModeShared;
+  bi.memory.set(mem);
+  auto buf = dxmt_device_->device().newBuffer(bi);
+  auto &queue = dxmt_device_->queue();
+  queue.CurrentChunk()->emitcc([src = tex, bh = buf.handle, w, h, bpr, total](ArgumentEncodingContext &ctx) mutable {
+    ctx.startBlitPass();
+    auto sh = ctx.access(src, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    auto &b = ctx.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+    b.type = WMTBlitCommandCopyFromTextureToBuffer;
+    b.src = sh; b.slice = 0; b.level = 0; b.origin = {0, 0, 0}; b.size = {w, h, 1};
+    b.dst = bh; b.offset = 0; b.bytes_per_row = bpr; b.bytes_per_image = total;
+    ctx.endPass();
+  });
+  queue.CommitCurrentChunk();
+  queue.WaitForIdle();
+  CreateDirectoryA("d9mt_rt", nullptr);
+  char name[128];
+  snprintf(name, sizeof(name), "d9mt_rt\\%03u_%s_%p_%ux%u.bgra", seq++, tag, (void *)tex.ptr(), w, h);
+  if (FILE *f = fopen(name, "wb")) { fwrite(mem, 1, total, f); fclose(f); }
+  fprintf(stderr, "d9mt RT trace:   dump %s\n", name);
+  wsi::aligned_free(mem);
+}
+
+void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, const void *up, UINT upStride,
+                           INT baseVertex, UINT start) {
+  if (!rt_trace_on() || !current_rt_) return;
+  const void *rt = current_rt_.ptr();
+  bool smallRT = (current_rt_->width() <= 512 && current_rt_->height() <= 512) ||
+                 (viewport_.Width <= 512 && viewport_.Height <= 512);
+  bool readsTracedRT = false;
+  for (unsigned s = 0; s < 8; s++)
+    if (bound_textures_[s] && g_rt_trace_rts.count(bound_textures_[s]->texture().ptr())) readsTracedRT = true;
+  if (!smallRT && !readsTracedRT) return;
+  if (smallRT) g_rt_trace_rts[rt]++;
+  std::string o = str::format("d9mt RT trace: ", kind, " pt=", (int)pt, " prims=", prims, " rt=", rt, " ",
+      current_rt_->width(), "x", current_rt_->height(), " vp=", viewport_.X, ",", viewport_.Y, " ", viewport_.Width, "x",
+      viewport_.Height);
+  if (current_vs_) o += str::format(" vs=", std::hex, shader_fnv(current_vs_->bytecode(), current_vs_->bytecodeSize()), std::dec);
+  else o += str::format(" vs=FF fvf=", std::hex, current_fvf_, std::dec);
+  if (current_ps_) o += str::format(" ps=", std::hex, current_ps_->trace_hash, std::dec);
+  else o += str::format(" ps=FF op0=", texture_stage_states_[0][D3DTSS_COLOROP], "/", texture_stage_states_[0][D3DTSS_COLORARG1], "/",
+      texture_stage_states_[0][D3DTSS_COLORARG2], " aop0=", texture_stage_states_[0][D3DTSS_ALPHAOP], "/",
+      texture_stage_states_[0][D3DTSS_ALPHAARG1], "/", texture_stage_states_[0][D3DTSS_ALPHAARG2], " op1=",
+      texture_stage_states_[1][D3DTSS_COLOROP], " tfactor=", std::hex, render_states_[D3DRS_TEXTUREFACTOR], std::dec);
+  o += str::format(" blend=", render_states_[D3DRS_ALPHABLENDENABLE], ":", render_states_[D3DRS_SRCBLEND], "/",
+      render_states_[D3DRS_DESTBLEND], "/", render_states_[D3DRS_BLENDOP], " atest=", render_states_[D3DRS_ALPHATESTENABLE],
+      " z=", render_states_[D3DRS_ZENABLE], " cull=", render_states_[D3DRS_CULLMODE], " cwm=", std::hex,
+      render_states_[D3DRS_COLORWRITEENABLE], std::dec);
+  for (unsigned s = 0; s < 8; s++) {
+    if (!bound_textures_[s]) continue;
+    auto *t = bound_textures_[s].ptr();
+    o += str::format(" t", s, "=", (void *)t->texture().ptr(), " ", t->width(), "x", t->height(), " addr=",
+        sampler_states_[s][D3DSAMP_ADDRESSU], "/", sampler_states_[s][D3DSAMP_ADDRESSV], " filt=",
+        sampler_states_[s][D3DSAMP_MINFILTER], "/", sampler_states_[s][D3DSAMP_MAGFILTER], "/",
+        sampler_states_[s][D3DSAMP_MIPFILTER], g_rt_trace_rts.count(t->texture().ptr()) ? " (RT)" : "");
+    if (s < 8) {
+      DWORD ttf = texture_stage_states_[s][D3DTSS_TEXTURETRANSFORMFLAGS];
+      o += str::format(" tci=", std::hex, texture_stage_states_[s][D3DTSS_TEXCOORDINDEX], " ttf=", ttf, std::dec);
+      if (ttf) {
+        const float *m = &transforms_[TransformIndex((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + s))]._11;
+        o += " texmat=[";
+        for (int k = 0; k < 16; k++) o += str::format(k ? (k % 4 ? "," : " | ") : "", m[k]);
+        o += "]";
+      }
+    }
+  }
+  if (current_vdecl_) {
+    o += " decl=";
+    for (auto &e : current_vdecl_->elements()) {
+      if (e.Stream == 0xFF) break;
+      o += str::format(e.Stream, ":", e.Offset, ":u", (int)e.Usage, (int)e.UsageIndex, ":t", (int)e.Type, " ");
+    }
+  }
+  if (current_ps_)
+    for (unsigned r = 0; r < 8; r++)
+      o += str::format(" pc", r, "=(", psConstants_[r][0], ",", psConstants_[r][1], ",", psConstants_[r][2], ",", psConstants_[r][3], ")");
+  if (current_vs_)
+    for (unsigned r = 0; r < 12; r++)
+      o += str::format(" vc", r, "=(", vsConstants_[r][0], ",", vsConstants_[r][1], ",", vsConstants_[r][2], ",", vsConstants_[r][3], ")");
+  const uint8_t *vdata = (const uint8_t *)up;
+  UINT stride = upStride;
+  if (!vdata && stream_sources_[0] && stream_sources_[0]->allocation()) {
+    vdata = (const uint8_t *)stream_sources_[0]->allocation()->mappedMemory(0) + stream_offsets_[0] +
+            (size_t)(baseVertex + (INT)start) * stream_strides_[0];
+    stride = stream_strides_[0];
+  }
+  if (vdata && stride && prims <= 4) {
+    for (unsigned v = 0; v < 4; v++) {
+      o += str::format(" v", v, "=[");
+      for (unsigned k = 0; k < std::min<UINT>(stride / 4, 8); k++) {
+        float f; memcpy(&f, vdata + v * stride + k * 4, 4);
+        o += str::format(k ? "," : "", f);
+      }
+      o += "]";
+    }
+  }
+  fprintf(stderr, "%s\n", o.c_str());
+  if (bound_textures_[0] && (readsTracedRT || (viewport_.Width <= 128 && viewport_.Height <= 128))) {
+    FlushDrawBatch();
+    TraceDumpTexture(bound_textures_[0]->texture(), "in_t0");
+  }
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
     D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) { D9MT_TRACE();
+  TraceDraw("DP", PrimitiveType, PrimitiveCount, nullptr, 0, 0, StartVertex);
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_count++;
 #endif
@@ -3038,6 +3197,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex,
     UINT MinVertexIndex, UINT NumVertices,
     UINT StartIndex, UINT PrimitiveCount) { D9MT_TRACE();
+  TraceDraw("DIP", PrimitiveType, PrimitiveCount, nullptr, 0, BaseVertexIndex, MinVertexIndex);
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_count++;
 #endif
@@ -3146,6 +3306,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
 HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
     D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount,
     const void *pVertexStreamZeroData, UINT VertexStreamZeroStride) { D9MT_TRACE();
+  TraceDraw("DPUP", PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, 0, 0);
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_up_count++;
 #endif
@@ -3231,6 +3392,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
     UINT NumVertices, UINT PrimitiveCount,
     const void *pIndexData, D3DFORMAT IndexDataFormat,
     const void *pVertexStreamZeroData, UINT VertexStreamZeroStride) { D9MT_TRACE();
+  TraceDraw("DIPUP", PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, 0, MinVertexIndex);
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_up_count++;
 #endif
@@ -3326,6 +3488,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
 // Present
 HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *) { D9MT_TRACE();
+  rt_trace_present();
   if (pSourceRect || pDestRect || hDestWindowOverride) {
     static bool warned = false;
     if (!warned) {
@@ -3596,6 +3759,16 @@ FFVSKey D3D9Device::BuildFFVSKey() {
     case D3DFOG_EXP2:   key.fog_mode = 2; break;
     case D3DFOG_LINEAR: key.fog_mode = 3; break;
     default:            key.fog_mode = 0; break;
+    }
+    // Pretransformed vertices: D3D9 uses table fog (z as the coordinate) when FOGTABLEMODE is set, otherwise the
+    // vertex-supplied specular alpha. Tell the FF VS which (bit 0x80; see d3d9_ff_shader.cpp).
+    if (key.fog_mode && key.has_position_t && render_states_[D3DRS_FOGTABLEMODE] != D3DFOG_NONE) {
+      switch (render_states_[D3DRS_FOGTABLEMODE]) {
+      case D3DFOG_EXP:    key.fog_mode = 1; break;
+      case D3DFOG_EXP2:   key.fog_mode = 2; break;
+      default:            key.fog_mode = 3; break;
+      }
+      key.fog_mode |= 0x80;
     }
   }
 
@@ -3892,6 +4065,14 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
     IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect,
     IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
     D3DTEXTUREFILTERTYPE Filter) { D9MT_TRACE();
+  if (rt_trace_on()) {
+    auto rs = [](const RECT *r) { return r ? str::format(r->left, ",", r->top, "-", r->right, ",", r->bottom) : std::string("all"); };
+    D3DSURFACE_DESC sd = {}, dd = {};
+    if (pSourceSurface) pSourceSurface->GetDesc(&sd);
+    if (pDestSurface) pDestSurface->GetDesc(&dd);
+    fprintf(stderr, "d9mt RT trace: StretchRect src=%p %ux%u [%s] dst=%p %ux%u [%s] filter=%d\n", (void *)pSourceSurface,
+            sd.Width, sd.Height, rs(pSourceRect).c_str(), (void *)pDestSurface, dd.Width, dd.Height, rs(pDestRect).c_str(), (int)Filter);
+  }
   FlushDrawBatch();
   if (!pSourceSurface || !pDestSurface) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
@@ -3911,6 +4092,14 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
   TextureViewKey srcView = 0, dstView = 0;
   auto srcTex = getTexture(pSourceSurface, srcView);
   auto dstTex = getTexture(pDestSurface, dstView);
+  Rc<Texture> traceDst = rt_trace_on() ? dstTex : Rc<Texture>();
+  if (rt_trace_on() && srcTex && dstTex) {
+    g_rt_trace_rts[dstTex.ptr()]++;
+    fprintf(stderr, "d9mt RT trace:   -> srcTex=%p %llux%llu dstTex=%p %llux%llu dstView=%llu fmt=%d/%d\n", (void *)srcTex.ptr(),
+            (unsigned long long)srcTex->width(), (unsigned long long)srcTex->height(), (void *)dstTex.ptr(),
+            (unsigned long long)dstTex->width(), (unsigned long long)dstTex->height(), (unsigned long long)dstView,
+            (int)srcTex->pixelFormat(), (int)dstTex->pixelFormat());
+  }
 
   if (!srcTex || !dstTex) {
     Logger::warn("D3D9: StretchRect requires GPU-backed surfaces");
@@ -4008,6 +4197,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
       draw.base_instance = 0;
       ctx.endPass();
     });
+    if (traceDst) TraceDumpTexture(traceDst, "sr_dst");
     return S_OK;
   }
 
@@ -4038,6 +4228,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::StretchRect(
     ctx.endPass();
   });
 
+  if (traceDst) TraceDumpTexture(traceDst, "sr_dst");
   return S_OK;
 }
 

@@ -26,6 +26,7 @@ private:
   State state = State::Freezed;
   uint64_t next_capture_frame = 0;
   bool capture_key_pressed_ = false;
+  int capture_key_ = 0x79; /* VK_F10 */
 };
 
 } // namespace dxmt
