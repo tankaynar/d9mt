@@ -1478,10 +1478,23 @@ static size_t DxsoBytecodeSize(const DWORD *code) {
   return (size_t)((const uint8_t *)p - (const uint8_t *)code);
 }
 
+// D9MT_DUMP_SHADERS=1: write every shader's bytecode to d9mt_shaders\{vs,ps}_<hash>.bin in the game folder
+static void DumpShaderBytecode(const char *kind, const DWORD *code, size_t size) {
+  static const bool on = [] { const char *v = getenv("D9MT_DUMP_SHADERS"); return v && *v == '1'; }();
+  if (!on) return;
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < size; i++) h = (h ^ ((const uint8_t *)code)[i]) * 16777619u;
+  CreateDirectoryA("d9mt_shaders", nullptr);
+  char name[64];
+  snprintf(name, sizeof(name), "d9mt_shaders\\%s_%08x.bin", kind, h);
+  if (FILE *f = fopen(name, "wb")) { fwrite(code, 1, size, f); fclose(f); }
+}
+
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) { D9MT_TRACE();
   if (!pFunction || !ppShader) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   size_t bytecodeSize = DxsoBytecodeSize(pFunction);
+  DumpShaderBytecode(((pFunction[0] >> 16) == 0xFFFE) ? "vs" : "ps", pFunction, bytecodeSize);
 
   dxso_shader_t shader = nullptr;
   sm50_error_t err = nullptr;
@@ -1516,6 +1529,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreatePixelShader(const DWORD *pFunction, 
   if (!pFunction || !ppShader) return D9MT_FAIL(D3DERR_INVALIDCALL);
 
   size_t bytecodeSize = DxsoBytecodeSize(pFunction);
+  DumpShaderBytecode(((pFunction[0] >> 16) == 0xFFFE) ? "vs" : "ps", pFunction, bytecodeSize);
 
   dxso_shader_t shader = nullptr;
   sm50_error_t err = nullptr;
