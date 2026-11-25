@@ -1,5 +1,6 @@
 
 #include "d3d9_device.hpp"
+#include <set>
 #include "d3d9_trace.hpp"
 #include "util_env.hpp"
 #include "d3d9_buffer.hpp"
@@ -2403,6 +2404,36 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
 
   uint32_t slot_mask = current_vdecl_ ? current_vdecl_->slotMask() : 0;
   uint32_t num_vb_slots = __builtin_popcount(slot_mask);
+#ifdef DXMT_PERF
+  // d9mt diag (rendering): describe each distinct draw setup that has skinning inputs, once; dump its VS bytecode.
+  if (current_vdecl_) {
+    bool skinned = false;
+    for (auto &e : current_vdecl_->elements())
+      if (e.Usage == D3DDECLUSAGE_BLENDWEIGHT || e.Usage == D3DDECLUSAGE_BLENDINDICES) skinned = true;
+    static std::set<std::pair<const void *, const void *>> seen;
+    if (skinned && seen.size() < 32 && seen.insert({(const void *)current_vs_.ptr(), (const void *)current_ps_.ptr()}).second) {
+      std::string els;
+      for (auto &e : current_vdecl_->elements())
+        els += str::format(" [s", e.Stream, " off", e.Offset, " type", (int)e.Type, " usage", (int)e.Usage, ".", (int)e.UsageIndex, "]");
+      uint32_t vsver = current_vs_ && current_vs_->bytecodeSize() >= 4 ? *(const uint32_t *)current_vs_->bytecode() : 0;
+      uint32_t psver = 0;
+      fprintf(stderr, "d9mt skin-draw #%u: vs=%p ver=%08x maxc=%u ps=%p ver=%08x tex0=%p fog=%lu fogcolor=%08lx lighting=%lu vblend=%lu decl:%s\n",
+              (unsigned)seen.size(), (void *)current_vs_.ptr(), vsver, current_vs_ ? current_vs_->maxConstantReg() : 0,
+              (void *)current_ps_.ptr(), psver, (void *)bound_textures_[0].ptr(),
+              (unsigned long)render_states_[D3DRS_FOGENABLE], (unsigned long)render_states_[D3DRS_FOGCOLOR],
+              (unsigned long)render_states_[D3DRS_LIGHTING], (unsigned long)render_states_[D3DRS_VERTEXBLEND], els.c_str());
+      if (current_vs_) {
+        // bytecode as hex dwords in the log (no file I/O from inside the renderer)
+        const uint32_t *t = (const uint32_t *)current_vs_->bytecode();
+        uint32_t n = current_vs_->bytecodeSize() / 4;
+        std::string hex;
+        char b[12];
+        for (uint32_t i = 0; i < n; i++) { snprintf(b, sizeof(b), "%08x ", t[i]); hex += b; }
+        fprintf(stderr, "d9mt skin-vs %p bytecode(%u dwords): %s\n", (void *)current_vs_.ptr(), n, hex.c_str());
+      }
+    }
+  }
+#endif
 
   constexpr uint64_t VB_ENTRY_SIZE = 16;
   constexpr uint64_t PS_CONST_BUF_SIZE = 256 * 4 * sizeof(float); // PS needs full 256 regs (special regs at 254-255)
