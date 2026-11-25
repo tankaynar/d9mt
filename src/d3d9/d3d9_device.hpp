@@ -325,7 +325,14 @@ private:
   // Fullscreen: window restyled/resized to the backbuffer (like wined3d/DXGI do)
   wsi::DXMTWindowState window_state_ = {};
   bool fullscreen_window_ = false;
+  bool focus_minimized_ = false; // fullscreen window minimized because the app lost focus
   void ApplyFullscreenWindow();
+public:
+  // Called from the subclassed device window procedure (WM_ACTIVATEAPP), like DXVK/wined3d.
+  void OnActivateApp(bool active);
+private:
+  void HookDeviceWindow();
+  void UnhookDeviceWindow();
 
   std::unique_ptr<Device> dxmt_device_;
   WMT::Object native_view_;

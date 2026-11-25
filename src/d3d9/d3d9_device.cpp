@@ -117,6 +117,7 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
 
   // Configure layer properties for presentation
   ApplyFullscreenWindow();
+  HookDeviceWindow();
   presenter_->changeLayerProperties(
       WMTPixelFormatBGRA8Unorm, WMTColorSpaceSRGB,
       present_params_.BackBufferWidth, present_params_.BackBufferHeight, 1);
@@ -277,6 +278,11 @@ D3D9Device::D3D9Device(IDirect3D9 *pD3D9, HWND hFocusWindow, D3DPRESENT_PARAMETE
 }
 
 D3D9Device::~D3D9Device() {
+  UnhookDeviceWindow();
+  if (fullscreen_window_ && hwnd_ && ::IsWindow(hwnd_)) {
+    wsi::leaveFullscreenMode(hwnd_, &window_state_, false);
+    wsi::restoreDisplayMode(wsi::getWindowMonitor(hwnd_));
+  }
   if (cursor_handle_)
     DestroyCursor(cursor_handle_);
   if (native_view_)
@@ -454,6 +460,80 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetCreationParameters(D3DDEVICE_CREATION_P
   pParameters->hFocusWindow = hwnd_;
   pParameters->BehaviorFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING;
   return S_OK;
+}
+
+
+// ---- Device window hook (focus handling) ----
+// A fullscreen device window is HWND_TOPMOST (enterFullscreenMode). Wine's macOS driver keeps topmost windows floating
+// above every other app, so after Alt/Cmd+Tab the game stayed on top and held the display mode. Native D3D9, wined3d
+// and DXVK minimize the fullscreen window and restore the desktop mode when the app is deactivated (WM_ACTIVATEAPP),
+// and restore both on reactivation. D9MT_NO_FOCUS_HOOK=1 disables this.
+namespace {
+struct D9mtWindowHook { D3D9Device *device; WNDPROC orig; bool unicode; };
+std::mutex g_window_hook_mutex;
+std::unordered_map<HWND, D9mtWindowHook> g_window_hooks;
+
+LRESULT CALLBACK D9mtDeviceWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  D9mtWindowHook hook = {};
+  {
+    std::lock_guard<std::mutex> lock(g_window_hook_mutex);
+    auto it = g_window_hooks.find(hwnd);
+    if (it == g_window_hooks.end())
+      return ::IsWindowUnicode(hwnd) ? ::DefWindowProcW(hwnd, msg, wp, lp) : ::DefWindowProcA(hwnd, msg, wp, lp);
+    hook = it->second;
+    if (msg == WM_NCDESTROY) {
+      (hook.unicode ? ::SetWindowLongPtrW : ::SetWindowLongPtrA)(hwnd, GWLP_WNDPROC, (LONG_PTR)hook.orig);
+      g_window_hooks.erase(it);
+    }
+  }
+  if (msg == WM_ACTIVATEAPP && hook.device)
+    hook.device->OnActivateApp(wp != 0);
+  return hook.unicode ? ::CallWindowProcW(hook.orig, hwnd, msg, wp, lp) : ::CallWindowProcA(hook.orig, hwnd, msg, wp, lp);
+}
+} // namespace
+
+void D3D9Device::HookDeviceWindow() {
+  static const bool off = [] { const char *v = getenv("D9MT_NO_FOCUS_HOOK"); return v && *v == '1'; }();
+  if (off || !hwnd_ || !::IsWindow(hwnd_)) return;
+  std::lock_guard<std::mutex> lock(g_window_hook_mutex);
+  auto it = g_window_hooks.find(hwnd_);
+  if (it != g_window_hooks.end()) { it->second.device = this; return; }
+  bool unicode = ::IsWindowUnicode(hwnd_);
+  WNDPROC orig = (WNDPROC)(unicode ? ::SetWindowLongPtrW : ::SetWindowLongPtrA)(hwnd_, GWLP_WNDPROC,
+                                                                                (LONG_PTR)D9mtDeviceWindowProc);
+  if (orig) g_window_hooks[hwnd_] = {this, orig, unicode};
+}
+
+void D3D9Device::UnhookDeviceWindow() {
+  std::lock_guard<std::mutex> lock(g_window_hook_mutex);
+  auto it = g_window_hooks.find(hwnd_);
+  if (it == g_window_hooks.end() || it->second.device != this) return;
+  // Only restore the original procedure if nobody subclassed the window after us; otherwise keep forwarding.
+  LONG_PTR cur = (it->second.unicode ? ::GetWindowLongPtrW : ::GetWindowLongPtrA)(hwnd_, GWLP_WNDPROC);
+  if (cur == (LONG_PTR)D9mtDeviceWindowProc) {
+    (it->second.unicode ? ::SetWindowLongPtrW : ::SetWindowLongPtrA)(hwnd_, GWLP_WNDPROC, (LONG_PTR)it->second.orig);
+    g_window_hooks.erase(it);
+  } else {
+    it->second.device = nullptr;
+  }
+}
+
+void D3D9Device::OnActivateApp(bool active) {
+  if (present_params_.Windowed || !fullscreen_window_ || !hwnd_) return;
+  Logger::info(str::format("D3D9Device: WM_ACTIVATEAPP ", active ? "activate" : "deactivate"));
+  if (!active) {
+    if (focus_minimized_) return;
+    focus_minimized_ = true;
+    ::SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    wsi::restoreDisplayMode(wsi::getWindowMonitor(hwnd_));
+    if (::IsWindowVisible(hwnd_)) ::ShowWindow(hwnd_, SW_MINIMIZE);
+  } else {
+    if (!focus_minimized_) return;
+    focus_minimized_ = false;
+    if (::IsIconic(hwnd_)) ::ShowWindow(hwnd_, SW_RESTORE);
+    ApplyFullscreenWindow();
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
 }
 
 // Fullscreen D3D9 apps (e.g. RenderWare/GTA SA) expect the device window's client
