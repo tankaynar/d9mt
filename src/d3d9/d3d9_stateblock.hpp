@@ -5,10 +5,13 @@
 #include "d3d9_device.hpp"
 #include <d3d9.h>
 #include <cstring>
+#include "d3d9_statemask.hpp"
 
 namespace dxmt {
 
 class D3D9VertexShader;
+
+
 class D3D9PixelShader;
 class D3D9VertexDeclaration;
 class D3D9VertexBuffer;
@@ -42,6 +45,9 @@ private:
   friend class D3D9Device;
   D3D9Device *device_;
 
+public:
+  D3D9StateMask mask = {}; // states this block holds
+private:
   // Captured state
   DWORD render_states[256] = {};
   DWORD texture_stage_states[8][33] = {};

@@ -649,7 +649,11 @@ void rt_trace_present() {
     g_rt_trace_frames = left - 1;
   }
   bool down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
-  if (down && !g_rt_trace_key_down && left <= 0) {
+  static uint64_t present_count = 0;
+  static const uint64_t auto_at = [] { const char *v = getenv("D9MT_AUTO_TRACE_AT"); return v ? strtoull(v, nullptr, 10) : 0ull; }();
+  static const bool wait_mark = [] { const char *v = getenv("D9MT_AUTO_WAIT_MARK"); return v && *v == '1'; }();
+  bool auto_now = !wait_mark && auto_at && ++present_count == auto_at;
+  if ((auto_now || (down && !g_rt_trace_key_down)) && left <= 0) {
     g_rt_trace_rts.clear();
     g_rt_trace_frames = 2;
     fprintf(stderr, "d9mt RT trace: ==== start\n");
@@ -853,6 +857,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetViewport(const D3DVIEWPORT9 *pViewport) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->viewport = true;
   if (!pViewport) return D9MT_FAIL(D3DERR_INVALIDCALL);
   viewport_ = *pViewport;
   ff_const_version_++;
@@ -868,6 +873,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetViewport(D3DVIEWPORT9 *pViewport) { D9M
 
 // Render state
 HRESULT STDMETHODCALLTYPE D3D9Device::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) { D9MT_TRACE();
+  if (rec_mask_ && State < 256) rec_mask_->rs[State] = true;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_state_change_count++;
 #endif
@@ -956,6 +962,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetRenderState(D3DRENDERSTATETYPE State, D
 
 // Transform state
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) { D9MT_TRACE();
+  if (rec_mask_) { UINT ti = TransformIndex(State); if (ti < 512) rec_mask_->xf[ti] = true; }
   if (!pMatrix) return D9MT_FAIL(D3DERR_INVALIDCALL);
   uint32_t idx = TransformIndex(State);
   if (idx >= 512) return D9MT_FAIL(D3DERR_INVALIDCALL);
@@ -999,6 +1006,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE St
 
 // Material
 HRESULT STDMETHODCALLTYPE D3D9Device::SetMaterial(const D3DMATERIAL9 *pMaterial) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->material = true;
   if (!pMaterial) return D9MT_FAIL(D3DERR_INVALIDCALL);
   material_ = *pMaterial;
   ff_const_version_++;
@@ -1014,6 +1022,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetMaterial(D3DMATERIAL9 *pMaterial) { D9M
 
 // Lights
 HRESULT STDMETHODCALLTYPE D3D9Device::SetLight(DWORD Index, const D3DLIGHT9 *pLight) { D9MT_TRACE();
+  if (rec_mask_ && Index < 32) rec_mask_->light[Index] = true;
   if (!pLight || Index >= kMaxLights) return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (pLight->Type != lights_[Index].Type)
     pso_dirty_ = true; // only light Type affects FF VS key
@@ -1030,6 +1039,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetLight(DWORD Index, D3DLIGHT9 *pLight) {
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::LightEnable(DWORD Index, BOOL Enable) { D9MT_TRACE();
+  if (rec_mask_ && Index < 32) rec_mask_->light_en[Index] = true;
   if (Index >= kMaxLights) return D9MT_FAIL(D3DERR_INVALIDCALL);
   light_enabled_[Index] = Enable;
   pso_dirty_ = true; // light enable affects FF VS key
@@ -1046,6 +1056,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetLightEnable(DWORD Index, BOOL *pEnable)
 
 // Texture stage states
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) { D9MT_TRACE();
+  if (rec_mask_ && Stage < 8 && (UINT)Type < 33) rec_mask_->tss[Stage][Type] = true;
   if (Stage >= 8 || Type >= 33) return D9MT_FAIL(D3DERR_INVALIDCALL);
   if (texture_stage_states_[Stage][Type] == Value) return S_OK;
   texture_stage_states_[Stage][Type] = Value;
@@ -1157,6 +1168,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) { D9MT_TRACE();
+  if (rec_mask_ && Stage < 16) rec_mask_->tex[Stage] = true;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_state_change_count++;
 #endif
@@ -1179,6 +1191,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetTexture(DWORD Stage, IDirect3DBaseTextu
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) { D9MT_TRACE();
+  if (rec_mask_ && Sampler < 16 && (UINT)Type < 14) rec_mask_->samp[Sampler][Type] = true;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_state_change_count++;
 #endif
@@ -1322,6 +1335,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateIndexBuffer(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetIndices(IDirect3DIndexBuffer9 *pIndexData) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->ib = true;
   auto *ib = static_cast<D3D9IndexBuffer *>(pIndexData);
   if (current_ib_.ptr() == ib) return S_OK;
   current_ib_ = ib;
@@ -1336,6 +1350,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetIndices(IDirect3DIndexBuffer9 **ppIndex
 
 // FVF
 HRESULT STDMETHODCALLTYPE D3D9Device::SetFVF(DWORD FVF) { D9MT_TRACE();
+  if (rec_mask_) { rec_mask_->fvf = true; rec_mask_->vdecl = true; }
   if (FVF == 0) return S_OK;
 
   if (current_fvf_ == FVF) return S_OK;
@@ -1369,6 +1384,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateVertexDeclaration(
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->vdecl = true;
   auto *decl = static_cast<D3D9VertexDeclaration *>(pDecl);
   if (current_vdecl_.ptr() == decl) return S_OK;
   current_vdecl_ = decl;
@@ -1656,6 +1672,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateVertexShader(const DWORD *pFunction,
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexShader(IDirect3DVertexShader9 *pShader) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->vs = true;
   auto *vs = static_cast<D3D9VertexShader *>(pShader);
   if (current_vs_.ptr() == vs) return S_OK;
   current_vs_ = vs;
@@ -1702,6 +1719,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreatePixelShader(const DWORD *pFunction, 
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetPixelShader(IDirect3DPixelShader9 *pShader) { D9MT_TRACE();
+  if (rec_mask_) rec_mask_->ps = true;
   auto *ps = static_cast<D3D9PixelShader *>(pShader);
   if (current_ps_.ptr() == ps) return S_OK;
   current_ps_ = ps;
@@ -1719,6 +1737,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetPixelShader(IDirect3DPixelShader9 **ppS
 // Shader constants
 HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexShaderConstantF(
     UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { D9MT_TRACE();
+  if (rec_mask_ && pConstantData) for (UINT r = StartRegister; r < StartRegister + Vector4fCount && r < 256; r++) rec_mask_->vsc[r] = true;
   if (!pConstantData || StartRegister + Vector4fCount > 256) return D9MT_FAIL(D3DERR_INVALIDCALL);
   memcpy(&vsConstants_[StartRegister], pConstantData, Vector4fCount * 4 * sizeof(float));
   vs_const_version_++;
@@ -1727,6 +1746,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetVertexShaderConstantF(
 
 HRESULT STDMETHODCALLTYPE D3D9Device::SetPixelShaderConstantF(
     UINT StartRegister, const float *pConstantData, UINT Vector4fCount) { D9MT_TRACE();
+  if (rec_mask_ && pConstantData) for (UINT r = StartRegister; r < StartRegister + Vector4fCount && r < 256; r++) rec_mask_->psc[r] = true;
   if (!pConstantData || StartRegister + Vector4fCount > 256) return D9MT_FAIL(D3DERR_INVALIDCALL);
   memcpy(&psConstants_[StartRegister], pConstantData, Vector4fCount * 4 * sizeof(float));
   ps_const_version_++;
@@ -1736,6 +1756,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::SetPixelShaderConstantF(
 // Stream source
 HRESULT STDMETHODCALLTYPE D3D9Device::SetStreamSource(
     UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData, UINT OffsetInBytes, UINT Stride) { D9MT_TRACE();
+  if (rec_mask_ && StreamNumber < 16) rec_mask_->stream[StreamNumber] = true;
   if (StreamNumber >= 16) return D9MT_FAIL(D3DERR_INVALIDCALL);
   auto *vb = static_cast<D3D9VertexBuffer *>(pStreamData);
   if (stream_sources_[StreamNumber].ptr() == vb &&
@@ -3144,6 +3165,28 @@ void D3D9Device::TraceDumpTexture(const Rc<Texture> &tex, const char *tag) {
 }
 
 
+// d9mt diag: D9MT_SKIP_DRAWS=a-b[,c-d...] skips those draw-call indices (counted per frame from Present) — for
+// bisecting which draw produces an artifact with tools/autotest.sh. Returns true if this draw must be skipped.
+static std::atomic<uint32_t> g_draw_index{0};
+static bool d9mt_skip_draw() {
+  static std::vector<std::pair<uint32_t, uint32_t>> ranges = [] {
+    std::vector<std::pair<uint32_t, uint32_t>> r;
+    const char *v = getenv("D9MT_SKIP_DRAWS");
+    while (v && *v) {
+      char *end;
+      uint32_t a = strtoul(v, &end, 10), b = a;
+      if (*end == '-') b = strtoul(end + 1, &end, 10);
+      r.push_back({a, b});
+      v = (*end == ',') ? end + 1 : nullptr;
+    }
+    return r;
+  }();
+  uint32_t i = g_draw_index++;
+  for (auto &r : ranges) if (i >= r.first && i <= r.second) return true;
+  return false;
+}
+
+
 // d9mt diag: dump every mip level (raw: BGRA8/RGBA8, R8, BC1/2/3 blocks) to d9mt_rt\mips_tag_ptr_fmt_L<n>_WxH.raw
 void D3D9Device::TraceDumpLevels(const Rc<Texture> &tex, UINT levels, const char *tag) {
   if (!tex) return;
@@ -3202,7 +3245,7 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
   static const bool all_draws = [] { const char *v = getenv("D9MT_TRACE_RT"); return v && *v == '2'; }();
   if (!smallRT && !readsTracedRT && !all_draws) return;
   if (smallRT) g_rt_trace_rts[rt]++;
-  std::string o = str::format("d9mt RT trace: ", kind, " pt=", (int)pt, " prims=", prims, " rt=", rt, " ",
+  std::string o = str::format("d9mt RT trace: #", g_draw_index.load(), " ", kind, " pt=", (int)pt, " prims=", prims, " rt=", rt, " ",
       current_rt_->width(), "x", current_rt_->height(), " vp=", viewport_.X, ",", viewport_.Y, " ", viewport_.Width, "x",
       viewport_.Height);
   if (current_vs_) o += str::format(" vs=", std::hex, shader_fnv(current_vs_->bytecode(), current_vs_->bytecodeSize()), std::dec);
@@ -3263,9 +3306,10 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
   if (vdata && stride) {
     for (unsigned v = 0; v < 4; v++) {
       o += str::format(" v", v, "=[");
-      for (unsigned k = 0; k < std::min<UINT>(stride / 4, 8); k++) {
-        float f; memcpy(&f, vdata + v * stride + k * 4, 4);
-        o += str::format(k ? "," : "", f);
+      for (unsigned k = 0; k < std::min<UINT>(stride / 4, 10); k++) { // raw dwords: floats and D3DCOLORs alike
+        uint32_t u; memcpy(&u, vdata + v * stride + k * 4, 4);
+        char hx[12]; snprintf(hx, sizeof hx, "%s%08x", k ? "," : "", u);
+        o += hx;
       }
       o += "]";
     }
@@ -3285,9 +3329,11 @@ void D3D9Device::TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, co
   }
 }
 
+
 HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
     D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) { D9MT_TRACE();
   TraceDraw("DP", PrimitiveType, PrimitiveCount, nullptr, 0, 0, StartVertex);
+  if (d9mt_skip_draw()) return S_OK;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_count++;
 #endif
@@ -3367,6 +3413,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     UINT MinVertexIndex, UINT NumVertices,
     UINT StartIndex, UINT PrimitiveCount) { D9MT_TRACE();
   TraceDraw("DIP", PrimitiveType, PrimitiveCount, nullptr, 0, BaseVertexIndex, MinVertexIndex);
+  if (d9mt_skip_draw()) return S_OK;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_count++;
 #endif
@@ -3476,6 +3523,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
     D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount,
     const void *pVertexStreamZeroData, UINT VertexStreamZeroStride) { D9MT_TRACE();
   TraceDraw("DPUP", PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, 0, 0);
+  if (d9mt_skip_draw()) return S_OK;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_up_count++;
 #endif
@@ -3562,6 +3610,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
     const void *pIndexData, D3DFORMAT IndexDataFormat,
     const void *pVertexStreamZeroData, UINT VertexStreamZeroStride) { D9MT_TRACE();
   TraceDraw("DIPUP", PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride, 0, MinVertexIndex);
+  if (d9mt_skip_draw()) return S_OK;
 #ifdef DXMT_PERF
   dxmt_device_->queue().CurrentFrameStatistics().d3d9_draw_up_count++;
 #endif
@@ -3656,6 +3705,111 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
 
 // Present
 
+
+// ---- d9mt autotest (driven by tools/autotest.sh) ----
+// The scenario mod (tools/autotest/d9mt_autotest.c) calls d9mt_autotest_mark() once the scene is set up; with
+// D9MT_AUTO_WAIT_MARK=1 all D9MT_AUTO_* frame numbers count presents from that call, so runs are reproducible.
+static std::atomic<bool> g_autotest_marked{false};
+extern "C" __declspec(dllexport) void d9mt_autotest_mark() {
+  g_autotest_marked = true;
+  Logger::info("d9mt autotest: scenario ready (mark)");
+}
+// D9MT_AUTO_SHOT_AT=<n>   write the backbuffer of present #n to d9mt_auto\shot.bmp (exact rendered pixels)
+// D9MT_AUTO_FPS_FROM=<n>  collect frame times from present #n on; summary written to d9mt_auto\fps.txt at exit
+// D9MT_AUTO_EXIT_AT=<n>   terminate the process after present #n (no save, no shutdown path)
+// D9MT_AUTO_TRACE_AT=<n>  start the RT trace (D9MT_TRACE_RT must be set) at present #n
+void D3D9Device::AutoTestPresent() {
+  static const uint64_t shot_at = [] { const char *v = getenv("D9MT_AUTO_SHOT_AT"); return v ? strtoull(v, nullptr, 10) : 0ull; }();
+  static const uint64_t fps_from = [] { const char *v = getenv("D9MT_AUTO_FPS_FROM"); return v ? strtoull(v, nullptr, 10) : 0ull; }();
+  static const uint64_t exit_at = [] { const char *v = getenv("D9MT_AUTO_EXIT_AT"); return v ? strtoull(v, nullptr, 10) : 0ull; }();
+  static const uint64_t trace_at = [] { const char *v = getenv("D9MT_AUTO_TRACE_AT"); return v ? strtoull(v, nullptr, 10) : 0ull; }();
+  static const bool wait_mark = [] { const char *v = getenv("D9MT_AUTO_WAIT_MARK"); return v && *v == '1'; }();
+  if (!shot_at && !fps_from && !exit_at && !trace_at) return;
+  if (wait_mark && !g_autotest_marked) return;
+  static uint64_t n = 0;
+  static LARGE_INTEGER freq = {}, last = {};
+  static std::vector<double> ms;
+  n++;
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+  if (fps_from && n > fps_from && last.QuadPart)
+    ms.push_back((double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart);
+  last = now;
+  if (n == 1 || n % 300 == 0) {
+    CreateDirectoryA("d9mt_auto", nullptr);
+    if (FILE *f = fopen("d9mt_auto\\progress.txt", "w")) { fprintf(f, "%llu\n", (unsigned long long)n); fclose(f); }
+  }
+  if (wait_mark && trace_at && n == trace_at && g_rt_trace_frames.load() <= 0) {
+    g_rt_trace_rts.clear();
+    g_rt_trace_frames = 2;
+    fprintf(stderr, "d9mt RT trace: ==== start (autotest)\n");
+  }
+  if (shot_at && n == shot_at && backbuffer_) {
+    FlushDrawBatch();
+    UINT w = backbuffer_->width(), h = backbuffer_->height(), bpr = w * 4, total = bpr * h;
+    UINT aligned = (total + 0xFFF) & ~0xFFFu;
+    if (void *mem = wsi::aligned_malloc(aligned, DXMT_PAGE_SIZE)) {
+      WMTBufferInfo bi = {};
+      bi.length = aligned;
+      bi.options = WMTResourceStorageModeShared;
+      bi.memory.set(mem);
+      auto buf = dxmt_device_->device().newBuffer(bi);
+      auto &queue = dxmt_device_->queue();
+      queue.CurrentChunk()->emitcc([src = backbuffer_, bh = buf.handle, w, h, bpr, total](ArgumentEncodingContext &ctx) mutable {
+        ctx.startBlitPass();
+        auto sh = ctx.access(src, 0u, 0u, DXMT_ENCODER_RESOURCE_ACESS_READ);
+        auto &b = ctx.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+        b.type = WMTBlitCommandCopyFromTextureToBuffer;
+        b.src = sh; b.slice = 0; b.level = 0; b.origin = {0, 0, 0}; b.size = {w, h, 1};
+        b.dst = bh; b.offset = 0; b.bytes_per_row = bpr; b.bytes_per_image = total;
+        ctx.endPass();
+      });
+      queue.CommitCurrentChunk();
+      queue.WaitForIdle();
+      CreateDirectoryA("d9mt_auto", nullptr);
+      if (FILE *f = fopen("d9mt_auto\\shot.bmp", "wb")) {
+        // 24-bit top-down BMP (alpha dropped: the presented image ignores it)
+        UINT row = (w * 3 + 3) & ~3u, img = row * h;
+        uint8_t hdr[54] = {'B', 'M'};
+        auto put32 = [&](int o, uint32_t v) { memcpy(hdr + o, &v, 4); };
+        put32(2, 54 + img); put32(10, 54); put32(14, 40); put32(18, w); put32(22, (uint32_t)-(int32_t)h);
+        hdr[26] = 1; hdr[28] = 24; put32(34, img);
+        fwrite(hdr, 1, 54, f);
+        std::vector<uint8_t> line(row, 0);
+        for (UINT y = 0; y < h; y++) {
+          const uint8_t *s = (const uint8_t *)mem + (size_t)y * bpr;
+          for (UINT x = 0; x < w; x++) { line[x * 3] = s[x * 4]; line[x * 3 + 1] = s[x * 4 + 1]; line[x * 3 + 2] = s[x * 4 + 2]; }
+          fwrite(line.data(), 1, row, f);
+        }
+        fclose(f);
+      }
+      wsi::aligned_free(mem);
+      Logger::info(str::format("d9mt autotest: screenshot at present ", n));
+    }
+  }
+  if (exit_at && n >= exit_at) {
+    CreateDirectoryA("d9mt_auto", nullptr);
+    if (FILE *f = fopen("d9mt_auto\\fps.txt", "w")) {
+      if (!ms.empty()) {
+        std::vector<double> s = ms;
+        std::sort(s.begin(), s.end());
+        double sum = 0; for (double v : s) sum += v;
+        auto pct = [&](double p) { return s[std::min(s.size() - 1, (size_t)(p * (s.size() - 1)))]; };
+        fprintf(f, "frames=%zu avg_fps=%.2f median_fps=%.2f p5_fps=%.2f p1_fps=%.2f worst_ms=%.1f\n", s.size(),
+                1000.0 * s.size() / sum, 1000.0 / pct(0.5), 1000.0 / pct(0.95), 1000.0 / pct(0.99), s.back());
+      } else {
+        fprintf(f, "frames=0\n");
+      }
+      fclose(f);
+    }
+    if (FILE *f = fopen("d9mt_auto\\done.txt", "w")) { fprintf(f, "%llu\n", (unsigned long long)n); fclose(f); }
+    Logger::info(str::format("d9mt autotest: exit at present ", n));
+    fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 0);
+  }
+}
+
 // Gamma ramp: D3D9 applies the device gamma ramp to the display in fullscreen. GTA SA sets one (brightness
 // setting); it was ignored (empty stub), so d9mt looked brighter/flatter than wined3d, whose macOS driver applies it.
 // D9MT_NO_GAMMA=1 restores the old behaviour.
@@ -3705,6 +3859,8 @@ void STDMETHODCALLTYPE D3D9Device::GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *p
 HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *) { D9MT_TRACE();
   rt_trace_present();
+  AutoTestPresent();
+  g_draw_index = 0;
   if (pSourceRect || pDestRect || hDestWindowOverride) {
     static bool warned = false;
     if (!warned) {
@@ -4526,119 +4682,110 @@ HRESULT STDMETHODCALLTYPE D3D9Device::GetStreamSource(
 // State blocks
 HRESULT STDMETHODCALLTYPE D3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) { D9MT_TRACE();
   if (!ppSB) return D9MT_FAIL(D3DERR_INVALIDCALL);
-
-  Logger::debug(str::format("D3D9: CreateStateBlock type=", (int)Type));
-
+  // PIXELSTATE/VERTEXSTATE are treated as ALL (superset; harmless for save/restore use).
   auto *sb = new D3D9StateBlock(this);
-
-  // Capture current state
-  memcpy(sb->render_states, render_states_, sizeof(render_states_));
-  memcpy(sb->texture_stage_states, texture_stage_states_, sizeof(texture_stage_states_));
-  memcpy(sb->sampler_states, sampler_states_, sizeof(sampler_states_));
-  memcpy(sb->transforms, transforms_, sizeof(transforms_));
-  sb->viewport = viewport_;
-  sb->scissor_rect = scissor_rect_;
-  sb->material = material_;
-  memcpy(sb->lights, lights_, sizeof(lights_));
-  memcpy(sb->light_enabled, light_enabled_, sizeof(light_enabled_));
-  sb->fvf = current_fvf_;
-  memcpy(sb->vs_constants, vsConstants_, sizeof(vsConstants_));
-  memcpy(sb->ps_constants, psConstants_, sizeof(psConstants_));
-  sb->vs = current_vs_;
-  sb->ps = current_ps_;
-  sb->vdecl = current_vdecl_;
-  for (int i = 0; i < 16; i++) {
-    sb->stream_sources[i] = stream_sources_[i];
-    sb->stream_offsets[i] = stream_offsets_[i];
-    sb->stream_strides[i] = stream_strides_[i];
-    sb->textures[i] = bound_textures_[i];
-  }
-  sb->ib = current_ib_;
-
+  sb->mask.setAll();
+  sb->Capture();
   *ppSB = ref(sb);
   return S_OK;
 }
 
+// D3D9 recording semantics: setters called between Begin/EndStateBlock are recorded into the block and must NOT
+// change the device. Setters still write device state here (simpler); EndStateBlock copies the touched states into
+// the block and restores the device from the snapshot taken at BeginStateBlock. Previously recording leaked into
+// the device and EndStateBlock captured everything: WidescreenFix's SMAA pixel shader stayed bound under
+// RenderWare's cached "no shader" state, so GTA SA's colour filter ran through it (over-bright until ESC).
 HRESULT STDMETHODCALLTYPE D3D9Device::BeginStateBlock() { D9MT_TRACE();
+  if (rec_mask_) return D9MT_FAIL(D3DERR_INVALIDCALL);
+  auto *snap = new D3D9StateBlock(this);
+  snap->mask.setAll();
+  snap->Capture();
+  rec_snapshot_ = ref(snap);
+  rec_mask_ = new D3D9StateMask();
+  memset(rec_mask_, 0, sizeof(*rec_mask_));
   recording_state_block_ = true;
   return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE D3D9Device::EndStateBlock(IDirect3DStateBlock9 **ppSB) { D9MT_TRACE();
-  if (!ppSB) return D9MT_FAIL(D3DERR_INVALIDCALL);
+  if (!ppSB || !rec_mask_) return D9MT_FAIL(D3DERR_INVALIDCALL);
+  auto *sb = new D3D9StateBlock(this);
+  sb->mask = *rec_mask_;
+  delete rec_mask_;
+  rec_mask_ = nullptr;
   recording_state_block_ = false;
-
-  // Create a state block capturing current state (same as CreateStateBlock ALL)
-  return CreateStateBlock(D3DSBT_ALL, ppSB);
-}
-
-// D3D9StateBlock::Capture
-HRESULT STDMETHODCALLTYPE D3D9StateBlock::Capture() { D9MT_TRACE();
-  memcpy(render_states, device_->render_states_, sizeof(render_states));
-  memcpy(texture_stage_states, device_->texture_stage_states_, sizeof(texture_stage_states));
-  memcpy(sampler_states, device_->sampler_states_, sizeof(sampler_states));
-  memcpy(transforms, device_->transforms_, sizeof(transforms));
-  viewport = device_->viewport_;
-  scissor_rect = device_->scissor_rect_;
-  material = device_->material_;
-  memcpy(lights, device_->lights_, sizeof(lights));
-  memcpy(light_enabled, device_->light_enabled_, sizeof(light_enabled));
-  fvf = device_->current_fvf_;
-  memcpy(vs_constants, device_->vsConstants_, sizeof(vs_constants));
-  memcpy(ps_constants, device_->psConstants_, sizeof(ps_constants));
-  vs = device_->current_vs_;
-  ps = device_->current_ps_;
-  vdecl = device_->current_vdecl_;
-  for (int i = 0; i < 16; i++) {
-    stream_sources[i] = device_->stream_sources_[i];
-    stream_offsets[i] = device_->stream_offsets_[i];
-    stream_strides[i] = device_->stream_strides_[i];
-    textures[i] = device_->bound_textures_[i];
-  }
-  ib = device_->current_ib_;
+  sb->Capture();             // recorded values (the setters applied them)
+  rec_snapshot_->Apply();    // undo: recording must not change the device
+  rec_snapshot_->Release();
+  rec_snapshot_ = nullptr;
+  *ppSB = ref(sb);
   return S_OK;
 }
 
-// D3D9StateBlock::Apply
-HRESULT STDMETHODCALLTYPE D3D9StateBlock::Apply() { D9MT_TRACE();
-  memcpy(device_->render_states_, render_states, sizeof(render_states));
-  memcpy(device_->texture_stage_states_, texture_stage_states, sizeof(texture_stage_states));
-  memcpy(device_->sampler_states_, sampler_states, sizeof(sampler_states));
-  memcpy(device_->transforms_, transforms, sizeof(transforms));
-  device_->viewport_ = viewport;
-  device_->scissor_rect_ = scissor_rect;
-  device_->material_ = material;
-  memcpy(device_->lights_, lights, sizeof(lights));
-  memcpy(device_->light_enabled_, light_enabled, sizeof(light_enabled));
-  if (fvf) device_->SetFVF(fvf);
-  memcpy(device_->vsConstants_, vs_constants, sizeof(vs_constants));
-  memcpy(device_->psConstants_, ps_constants, sizeof(ps_constants));
-  device_->current_vs_ = vs;
-  device_->current_ps_ = ps;
-  device_->current_vdecl_ = vdecl;
+// D3D9StateBlock::Capture — copy the states this block holds from the device
+HRESULT STDMETHODCALLTYPE D3D9StateBlock::Capture() { D9MT_TRACE();
+  auto *d = device_;
+  for (int i = 0; i < 256; i++) if (mask.rs[i]) render_states[i] = d->render_states_[i];
+  for (int s = 0; s < 8; s++) for (int t = 0; t < 33; t++) if (mask.tss[s][t]) texture_stage_states[s][t] = d->texture_stage_states_[s][t];
+  for (int s = 0; s < 16; s++) for (int t = 0; t < 14; t++) if (mask.samp[s][t]) sampler_states[s][t] = d->sampler_states_[s][t];
+  for (int i = 0; i < 512; i++) if (mask.xf[i]) transforms[i] = d->transforms_[i];
+  if (mask.viewport) viewport = d->viewport_;
+  if (mask.scissor) scissor_rect = d->scissor_rect_;
+  if (mask.material) material = d->material_;
+  for (int i = 0; i < 32; i++) { if (mask.light[i]) lights[i] = d->lights_[i]; if (mask.light_en[i]) light_enabled[i] = d->light_enabled_[i]; }
+  if (mask.fvf) fvf = d->current_fvf_;
+  for (int i = 0; i < 256; i++) { if (mask.vsc[i]) memcpy(vs_constants[i], d->vsConstants_[i], 16); if (mask.psc[i]) memcpy(ps_constants[i], d->psConstants_[i], 16); }
+  if (mask.vs) vs = d->current_vs_;
+  if (mask.ps) ps = d->current_ps_;
+  if (mask.vdecl) vdecl = d->current_vdecl_;
   for (int i = 0; i < 16; i++) {
-    device_->stream_sources_[i] = stream_sources[i];
-    device_->stream_offsets_[i] = stream_offsets[i];
-    device_->stream_strides_[i] = stream_strides[i];
-    device_->bound_textures_[i] = textures[i];
+    if (mask.stream[i]) { stream_sources[i] = d->stream_sources_[i]; stream_offsets[i] = d->stream_offsets_[i]; stream_strides[i] = d->stream_strides_[i]; }
+    if (mask.tex[i]) textures[i] = d->bound_textures_[i];
+  }
+  if (mask.ib) ib = d->current_ib_;
+  return S_OK;
+}
+
+// D3D9StateBlock::Apply — write the states this block holds to the device
+HRESULT STDMETHODCALLTYPE D3D9StateBlock::Apply() { D9MT_TRACE();
+  auto *d = device_;
+  d->FlushDrawBatch();
+  for (int i = 0; i < 256; i++) if (mask.rs[i]) d->render_states_[i] = render_states[i];
+  for (int s = 0; s < 8; s++) for (int t = 0; t < 33; t++) if (mask.tss[s][t]) d->texture_stage_states_[s][t] = texture_stage_states[s][t];
+  for (int s = 0; s < 16; s++) for (int t = 0; t < 14; t++) if (mask.samp[s][t]) d->sampler_states_[s][t] = sampler_states[s][t];
+  for (int i = 0; i < 512; i++) if (mask.xf[i]) d->transforms_[i] = transforms[i];
+  if (mask.viewport) d->viewport_ = viewport;
+  if (mask.scissor) d->scissor_rect_ = scissor_rect;
+  if (mask.material) d->material_ = material;
+  for (int i = 0; i < 32; i++) { if (mask.light[i]) d->lights_[i] = lights[i]; if (mask.light_en[i]) d->light_enabled_[i] = light_enabled[i]; }
+  if (mask.fvf && fvf) d->SetFVF(fvf);
+  for (int i = 0; i < 256; i++) { if (mask.vsc[i]) memcpy(d->vsConstants_[i], vs_constants[i], 16); if (mask.psc[i]) memcpy(d->psConstants_[i], ps_constants[i], 16); }
+  if (mask.vs) d->current_vs_ = vs;
+  if (mask.ps) d->current_ps_ = ps;
+  if (mask.vdecl) d->current_vdecl_ = vdecl;
+  for (int i = 0; i < 16; i++) {
+    if (mask.stream[i]) { d->stream_sources_[i] = stream_sources[i]; d->stream_offsets_[i] = stream_offsets[i]; d->stream_strides_[i] = stream_strides[i]; }
+    if (mask.tex[i]) d->bound_textures_[i] = textures[i];
   }
   // Keep the bound-stage mask in sync with the restored textures (a stale bit with a null texture crashed the
   // next draw in BuildDrawCapture; GTA SA mods apply state blocks).
-  device_->tex_bound_mask_ = 0;
+  d->tex_bound_mask_ = 0;
   for (int i = 0; i < 16; i++)
-    if (textures[i])
-      device_->tex_bound_mask_ |= (1u << i);
-  device_->current_ib_ = ib;
+    if (d->bound_textures_[i])
+      d->tex_bound_mask_ |= (1u << i);
+  if (mask.ib) d->current_ib_ = ib;
   // Bump all dirty flags since state was restored by memcpy (bypassing setters)
-  device_->pso_dirty_ = true;
-  device_->dsso_dirty_ = true;
-  device_->vb_dirty_ = true;
-  device_->tex_dirty_ = true;
-  device_->shadow_valid_ = false;
-  device_->vs_const_version_++;
-  device_->ps_const_version_++;
-  device_->ff_const_version_++;
-  device_->ff_dirty_ |= D3D9Device::kFFDirtyAll;
+  d->pso_dirty_ = true;
+  d->dsso_dirty_ = true;
+  d->vb_dirty_ = true;
+  d->tex_dirty_ = true;
+  d->vp_dirty_ = true;
+  d->scissor_dirty_ = true;
+  d->shadow_valid_ = false;
+  d->vs_const_version_++;
+  d->ps_const_version_++;
+  d->ff_const_version_++;
+  d->ff_dirty_ |= D3D9Device::kFFDirtyAll;
   return S_OK;
 }
 

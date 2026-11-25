@@ -18,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include "d3d9_statemask.hpp"
 #include <vector>
 #include <d3d9.h>
 
@@ -153,7 +154,9 @@ public:
 
   HRESULT STDMETHODCALLTYPE SetScissorRect(const RECT *pRect) final {
     if (!pRect) return D3DERR_INVALIDCALL;
+    if (rec_mask_) rec_mask_->scissor = true;
     scissor_rect_ = *pRect;
+    scissor_dirty_ = true;
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE GetScissorRect(RECT *pRect) final {
@@ -304,6 +307,8 @@ public:
   void FlushDrawBatch();
   // d9mt diag: D9MT_TRACE_RT=1, press F7 in game -> log 2 frames of small-RT draws (see TraceDraw)
   void TraceDumpTexture(const Rc<Texture> &tex, const char *tag);
+  // d9mt autotest (D9MT_AUTO_*): frame-driven trace trigger, screenshot, FPS summary and exit
+  void AutoTestPresent();
   void TraceDumpLevels(const Rc<Texture> &tex, UINT levels, const char *tag);
   void TraceDraw(const char *kind, D3DPRIMITIVETYPE pt, UINT prims, const void *up, UINT upStride, INT baseVertex, UINT start);
   void QueueBatchedDraw(BatchedDraw &&draw);
@@ -503,6 +508,8 @@ private:
 
   // State block recording
   bool recording_state_block_ = false;
+  D3D9StateMask *rec_mask_ = nullptr;          // non-null while recording: setters mark what they touch
+  class D3D9StateBlock *rec_snapshot_ = nullptr; // full device state at BeginStateBlock (owned ref), restored at End
 
   // Depth-stencil state cache (keyed by packed DS state)
   struct DSKey {

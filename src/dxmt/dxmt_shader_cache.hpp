@@ -4,7 +4,9 @@
 
 namespace dxmt {
 
-constexpr int kDXMTShaderCacheVersion = 16;
+// Bump whenever airconv (the shader compiler) or a shader-key struct changes: cached Metal libraries are keyed by
+// shader input only, so stale entries would silently hide compiler fixes.
+constexpr int kDXMTShaderCacheVersion = 17;
 
 class ShaderCache {
 public:
