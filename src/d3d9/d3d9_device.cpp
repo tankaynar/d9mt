@@ -2373,9 +2373,12 @@ static CommandQueue::TransientAllocation GenerateFanIndices(CommandQueue &queue,
   auto alloc = queue.AllocateTransientBuffer(size, 2);
   auto *indices = static_cast<uint16_t*>(alloc.cpu_ptr);
   for (UINT i = 0; i < primCount; i++) {
-    indices[i * 3 + 0] = (uint16_t)(startVertex + 0);
-    indices[i * 3 + 1] = (uint16_t)(startVertex + i + 1);
-    indices[i * 3 + 2] = (uint16_t)(startVertex + i + 2);
+    // Relative indices; the caller passes StartVertex as baseVertex. (Adding startVertex here wrapped
+    // around 16 bits for draws late in a large vertex buffer and produced stray triangles.)
+    (void)startVertex;
+    indices[i * 3 + 0] = 0;
+    indices[i * 3 + 1] = (uint16_t)(i + 1);
+    indices[i * 3 + 2] = (uint16_t)(i + 2);
   }
   return alloc;
 }
@@ -2724,7 +2727,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
     bd.indexType = WMTIndexTypeUInt16;
     bd.ibRawBuffer = fanIB.buffer;
     bd.ibOffset = fanIB.offset;
-    bd.baseVertex = 0;
+    bd.baseVertex = StartVertex;
     QueueBatchedDraw(std::move(bd));
     return S_OK;
   }
@@ -2787,27 +2790,21 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     auto *srcData = (const uint8_t *)current_ib_->allocation()->mappedMemory(0)
                     + StartIndex * srcStride;
 
-    std::vector<uint16_t> expandedIndices(indexCount);
-    for (UINT i = 0; i < PrimitiveCount; i++) {
-      uint32_t i0, i1, i2;
-      if (is32) {
-        i0 = ((const uint32_t *)srcData)[0];
-        i1 = ((const uint32_t *)srcData)[i + 1];
-        i2 = ((const uint32_t *)srcData)[i + 2];
-      } else {
-        i0 = ((const uint16_t *)srcData)[0];
-        i1 = ((const uint16_t *)srcData)[i + 1];
-        i2 = ((const uint16_t *)srcData)[i + 2];
-      }
-      expandedIndices[i * 3 + 0] = (uint16_t)i0;
-      expandedIndices[i * 3 + 1] = (uint16_t)i1;
-      expandedIndices[i * 3 + 2] = (uint16_t)i2;
-    }
-
+    // Expand to a triangle list, keeping the source index width (32-bit indices were truncated to 16 bits).
     auto &queue = dxmt_device_->queue();
-    UINT ibSize = indexCount * sizeof(uint16_t);
-    auto fanIB = queue.AllocateTransientBuffer(ibSize, 2);
-    memcpy(fanIB.cpu_ptr, expandedIndices.data(), ibSize);
+    UINT ibSize = indexCount * srcStride;
+    auto fanIB = queue.AllocateTransientBuffer(ibSize, srcStride);
+    for (UINT i = 0; i < PrimitiveCount; i++) {
+      if (is32) {
+        auto *src = (const uint32_t *)srcData;
+        auto *dst = (uint32_t *)fanIB.cpu_ptr;
+        dst[i * 3 + 0] = src[0]; dst[i * 3 + 1] = src[i + 1]; dst[i * 3 + 2] = src[i + 2];
+      } else {
+        auto *src = (const uint16_t *)srcData;
+        auto *dst = (uint16_t *)fanIB.cpu_ptr;
+        dst[i * 3 + 0] = src[0]; dst[i * 3 + 1] = src[i + 1]; dst[i * 3 + 2] = src[i + 2];
+      }
+    }
 
     auto cap = BuildDrawCapture(mtlPrimType);
     if (!cap.pso) return D9MT_FAIL(D3DERR_INVALIDCALL);
@@ -2816,7 +2813,7 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitive(
     bd.cap = std::move(cap);
     bd.type = BatchedDraw::kIndexed;
     bd.indexCount = indexCount;
-    bd.indexType = WMTIndexTypeUInt16;
+    bd.indexType = is32 ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
     bd.ibRawBuffer = fanIB.buffer;
     bd.ibOffset = fanIB.offset;
     bd.baseVertex = BaseVertexIndex;
@@ -2990,34 +2987,27 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawIndexedPrimitiveUP(
     // Expand fan → triangle list
     bool is32 = (IndexDataFormat == D3DFMT_INDEX32);
     const uint8_t *srcData = (const uint8_t *)pIndexData;
-    UINT ibSize = indexCount * sizeof(uint16_t);
-    transientIB = queue.AllocateTransientBuffer(ibSize, 2);
-    auto *expandedIndices = static_cast<uint16_t*>(transientIB.cpu_ptr);
+    UINT outStride = is32 ? 4 : 2;
+    transientIB = queue.AllocateTransientBuffer(indexCount * outStride, outStride);
     for (UINT i = 0; i < PrimitiveCount; i++) {
-      uint32_t i0, i1, i2;
       if (is32) {
-        i0 = ((const uint32_t *)srcData)[0];
-        i1 = ((const uint32_t *)srcData)[i + 1];
-        i2 = ((const uint32_t *)srcData)[i + 2];
+        auto *src = (const uint32_t *)srcData;
+        auto *dst = static_cast<uint32_t *>(transientIB.cpu_ptr);
+        dst[i * 3 + 0] = src[0]; dst[i * 3 + 1] = src[i + 1]; dst[i * 3 + 2] = src[i + 2];
       } else {
-        i0 = ((const uint16_t *)srcData)[0];
-        i1 = ((const uint16_t *)srcData)[i + 1];
-        i2 = ((const uint16_t *)srcData)[i + 2];
+        auto *src = (const uint16_t *)srcData;
+        auto *dst = static_cast<uint16_t *>(transientIB.cpu_ptr);
+        dst[i * 3 + 0] = src[0]; dst[i * 3 + 1] = src[i + 1]; dst[i * 3 + 2] = src[i + 2];
       }
-      expandedIndices[i * 3 + 0] = (uint16_t)i0;
-      expandedIndices[i * 3 + 1] = (uint16_t)i1;
-      expandedIndices[i * 3 + 2] = (uint16_t)i2;
     }
-    indexStride = 2;
+    indexStride = outStride;
   } else {
     UINT ibDataSize = indexCount * indexStride;
     transientIB = queue.AllocateTransientBuffer(ibDataSize, indexStride);
     memcpy(transientIB.cpu_ptr, pIndexData, ibDataSize);
   }
 
-  WMTIndexType indexType = (PrimitiveType == D3DPT_TRIANGLEFAN)
-      ? WMTIndexTypeUInt16
-      : ((IndexDataFormat == D3DFMT_INDEX32) ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16);
+  WMTIndexType indexType = (IndexDataFormat == D3DFMT_INDEX32) ? WMTIndexTypeUInt32 : WMTIndexTypeUInt16;
 
   // Save and set stream source
   auto savedVB = stream_sources_[0];
