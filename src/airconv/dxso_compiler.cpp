@@ -1253,10 +1253,26 @@ static void compilePixelShader(
       break;
     case DxsoRegisterType::Input:
     case DxsoRegisterType::AttributeOut:
-      // v# registers are Color in PS < 3.0 (max 2: v0, v1)
-      // PS 3.0+ could have more, but for now handle the common case
-      val = (reg.id.num < 2) ? colorArgs[reg.id.num]
-                              : ConstantAggregateZero::get(float4Ty);
+      if (shader->info.majorVersion >= 3) {
+        // PS 3.0: v# are generic inputs declared by semantic (e.g. dcl_texcoord0 v3). Colours live in
+        // colorArgs, everything else in inputArray[dcl.reg]. (Treating v# as colours made every SM3
+        // post-process pass — WidescreenFix SMAA — read zero texcoords: one flat colour on screen.)
+        val = ConstantAggregateZero::get(float4Ty);
+        for (auto &dcl : shader->psInputDecls) {
+          if (dcl.reg != reg.id.num) continue;
+          if (dcl.usage == DxsoUsage::Color && dcl.usageIndex < 2)
+            val = colorArgs[dcl.usageIndex];
+          else if (reg.id.num < inputArraySize)
+            val = builder.CreateLoad(float4Ty, builder.CreateGEP(
+              ArrayType::get(float4Ty, inputArraySize), inputArray,
+              {builder.getInt32(0), builder.getInt32(reg.id.num)}));
+          break;
+        }
+      } else {
+        // v# registers are Color in PS < 3.0 (max 2: v0, v1)
+        val = (reg.id.num < 2) ? colorArgs[reg.id.num]
+                                : ConstantAggregateZero::get(float4Ty);
+      }
       break;
     case DxsoRegisterType::Texture: {
       if (isSM1PS) {
