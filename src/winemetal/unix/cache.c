@@ -44,6 +44,17 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
   return path;
 }
 
+// Shader-cache table per (d3d9-side cache version, airconv build). The version constant lives in d3d9.dll while the
+// shader compiler (airconv) lives in this winemetal.so; they are built and installed separately, so a cache filled
+// by an older compiler survived a version bump (GTA SA: fixed FF shaders kept coming from the cache). Mixing this
+// library's build stamp into the table name invalidates the cache whenever the compiler changes.
+static NSString *cache_table_name(uint64_t version) {
+  static const char stamp[] = __DATE__ " " __TIME__;
+  uint32_t h = 2166136261u;
+  for (const char *c = stamp; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+  return [NSString stringWithFormat:@"cache_%llu_%08x", version, h];
+}
+
 @implementation CacheReader
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
@@ -53,7 +64,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
       NSLog(@"[CacheReader] Failed to resolve cache path");
       return nil;
     }
-    NSString *tableName = [NSString stringWithFormat:@"cache_%llu", version];
+    NSString *tableName = cache_table_name(version);
     if (sqlite3_open_v2([dbPath fileSystemRepresentation], &_db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) !=
         SQLITE_OK) {
       NSLog(@"[CacheReader] Failed to open DB: %s", sqlite3_errmsg(_db));
@@ -173,7 +184,21 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     sqlite3_exec(_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(_db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
-    NSString *tableName = [NSString stringWithFormat:@"cache_%llu", version];
+    NSString *tableName = cache_table_name(version);
+    { // drop tables from other versions / compiler builds (they can never be read again)
+      sqlite3_stmt *st = NULL;
+      NSMutableArray *stale = [NSMutableArray array];
+      if (sqlite3_prepare_v2(_db, "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'cache_%';", -1, &st,
+                             NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+          NSString *n = [NSString stringWithUTF8String:(const char *)sqlite3_column_text(st, 0)];
+          if (n && ![n isEqualToString:tableName]) [stale addObject:n];
+        }
+        sqlite3_finalize(st);
+      }
+      for (NSString *n in stale)
+        sqlite3_exec(_db, [[NSString stringWithFormat:@"DROP TABLE IF EXISTS %@;", n] UTF8String], NULL, NULL, NULL);
+    }
     NSString *sqlCreate = [NSString stringWithFormat:@"CREATE TABLE IF NOT EXISTS %@ ("
                                                       "key BLOB PRIMARY KEY, "
                                                       "value BLOB NOT NULL);",
