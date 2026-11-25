@@ -3273,6 +3273,26 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     }
   }
 
+  {
+    // Once-per-second fps line, comparable with Wine's +fps channel for wined3d ("@ approx N fps").
+    // Also the worst single frame interval in that second (stutter indicator). D9MT_FPS_LOG=0 disables.
+    static const bool fps_log = [] { const char *v = getenv("D9MT_FPS_LOG"); return !(v && *v == '0'); }();
+    static auto win_start = std::chrono::steady_clock::now(), last = win_start;
+    static unsigned frames = 0;
+    static double worst_ms = 0;
+    if (fps_log) {
+      auto now = std::chrono::steady_clock::now();
+      double dt = std::chrono::duration<double, std::milli>(now - last).count();
+      last = now;
+      if (dt > worst_ms) worst_ms = dt;
+      frames++;
+      double win = std::chrono::duration<double>(now - win_start).count();
+      if (win >= 1.0) {
+        fprintf(stderr, "d9mt fps: @ approx %.2ffps worst=%.1fms\n", frames / win, worst_ms);
+        frames = 0; worst_ms = 0; win_start = now;
+      }
+    }
+  }
 #ifdef DXMT_PERF
   auto &perf_stats = dxmt_device_->queue().CurrentFrameStatistics();
   perf_stats.d3d9_frame_time = clock::now() - frame_start_;
@@ -3289,7 +3309,8 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Present(
     state = presenter_->synchronizeLayerProperties(),
     backbuffer = backbuffer_
   ](ArgumentEncodingContext &ctx) mutable {
-    double vsync = (present_params_.PresentationInterval & D3DPRESENT_INTERVAL_IMMEDIATE)
+    static const bool no_vsync = [] { const char *v = getenv("D9MT_NO_VSYNC"); return v && *v && *v != '0'; }();
+    double vsync = (no_vsync || (present_params_.PresentationInterval & D3DPRESENT_INTERVAL_IMMEDIATE))
         ? 0.0 : 1.0 / init_refresh_rate_;
     ctx.present(backbuffer, presenter_, vsync, state.metadata);
     ::d9mt_trace::g_enc_present++;
