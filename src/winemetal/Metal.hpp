@@ -81,28 +81,49 @@ public:
     this->handle = retained;
   }
 
+  // Retain the new object BEFORE releasing the old one: assigning the object a Reference already holds
+  // (e.g. re-binding the same depth texture / PSO) must not drop it to zero and free it first.
+  // (Same bug class as Com<T>::operator=, see d9mt notes.)
   Reference &
   operator=(const Reference &copy) {
-    if (this->handle != NULL_OBJECT_HANDLE)
-      this->release();
-    this->handle = copy.handle;
-    this->retain();
+    obj_handle_t old = this->handle;
+    Class incoming;
+    incoming.handle = copy.handle;
+    if (incoming.handle != NULL_OBJECT_HANDLE)
+      incoming.retain();
+    this->handle = incoming.handle;
+    if (old != NULL_OBJECT_HANDLE) {
+      Class prev;
+      prev.handle = old;
+      prev.release();
+    }
     return *this;
   }
   Reference &
   operator=(Class non_retained) {
-    if (this->handle != NULL_OBJECT_HANDLE)
-      this->release();
+    obj_handle_t old = this->handle;
+    if (non_retained.handle != NULL_OBJECT_HANDLE)
+      non_retained.retain();
     this->handle = non_retained.handle;
-    this->retain();
+    if (old != NULL_OBJECT_HANDLE) {
+      Class prev;
+      prev.handle = old;
+      prev.release();
+    }
     return *this;
   }
   Reference &
   operator=(Reference &&move) {
-    if (this->handle != NULL_OBJECT_HANDLE)
-      this->release();
+    if (&move == this)
+      return *this;
+    obj_handle_t old = this->handle;
     this->handle = move.handle;
     move.handle = NULL_OBJECT_HANDLE;
+    if (old != NULL_OBJECT_HANDLE) {
+      Class prev;
+      prev.handle = old;
+      prev.release();
+    }
     return *this;
   }
   Reference &
