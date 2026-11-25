@@ -2026,6 +2026,12 @@ static WMTSamplerInfo ConvertD3D9SamplerState(const DWORD state[14]) {
   {
     DWORD bc = state[D3DSAMP_BORDERCOLOR];
     unsigned a = (bc >> 24) & 0xFF, lum = (((bc >> 16) & 0xFF) + ((bc >> 8) & 0xFF) + (bc & 0xFF)) / 3;
+    if (state[D3DSAMP_ADDRESSU] == D3DTADDRESS_BORDER || state[D3DSAMP_ADDRESSV] == D3DTADDRESS_BORDER) {
+      static std::set<DWORD> seen;
+      if (seen.size() < 16 && seen.insert(bc).second)
+        Logger::info(str::format("d9mt border colour: ", std::hex, bc, " U=", std::dec, state[D3DSAMP_ADDRESSU],
+                                 " V=", state[D3DSAMP_ADDRESSV]));
+    }
     info.border_color = a < 128 ? WMTSamplerBorderColorTransparentBlack
                       : (lum >= 128 ? WMTSamplerBorderColorOpaqueWhite : WMTSamplerBorderColorOpaqueBlack);
   }
