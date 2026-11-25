@@ -2,6 +2,7 @@
 
 #include "./winemetal.h"
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <cstring>
 #include <vector>
@@ -778,6 +779,12 @@ public:
 
   Reference<Buffer>
   newBuffer(WMTBufferInfo &info) {
+    // d9mt: for buffers wrapping our own CPU memory (NoCopy), don't request write-combined CPU cache mode.
+    // Experiment: on Apple Silicon this may force the kernel to change page cache attributes of user memory,
+    // a suspect for the 1-2 s first-write stalls. D9MT_WC=1 restores the original behaviour.
+    static const bool keep_wc = [] { const char *e = getenv("D9MT_WC"); return e && *e == '1'; }();
+    if (info.memory.ptr && !keep_wc)
+      info.options = (WMTResourceOptions)(info.options & ~WMTResourceOptionCPUCacheModeWriteCombined);
     return Reference<Buffer>(MTLDevice_newBuffer(handle, &info));
   }
 
