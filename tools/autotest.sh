@@ -10,10 +10,11 @@ REPO="${0:A:h:h}"
 SCEN="${1:?usage: autotest.sh <scenario> [--trace] [--fps] [--shot N] [--exit N] [--timeout S] [VAR=value ...]}"; shift
 SCEN_FILE="$REPO/tools/autotest/scenarios/$SCEN.ini"
 [[ -f "$SCEN_FILE" ]] || { echo "no scenario $SCEN_FILE"; exit 2; }
-SHOT=60 EXIT=90 FPS_FROM=0 TRACE=0 TIMEOUT=240
+SHOT=60 EXIT=90 FPS_FROM=0 TRACE=0 TIMEOUT=240 QUIT=0
 while (( $# )); do
   case "$1" in
     --trace) TRACE=1 ;;
+    --quit) QUIT=1; EXIT=0 ;;                    # scenario quits the game itself (quit_after=N); check clean exit
     --fps) FPS_FROM=30; EXIT=1830 ;;            # ~30 s of frames after settling
     --shot) SHOT="$2"; shift ;;
     --exit) EXIT="$2"; shift ;;
@@ -50,20 +51,36 @@ rm -rf "$GAME/d9mt_auto"
 cp "$SCEN_FILE" "$GAME/d9mt_autotest_scenario.ini"
 
 export D9MT_AUTOTEST='d9mt_autotest_scenario.ini' D9MT_AUTO_WAIT_MARK=1 D9MT_NO_FOCUS_HOOK=1
-export D9MT_AUTO_SHOT_AT="$SHOT" D9MT_AUTO_EXIT_AT="$EXIT"
+export D9MT_AUTO_SHOT_AT="$SHOT"
+(( EXIT )) && export D9MT_AUTO_EXIT_AT="$EXIT"
 (( FPS_FROM )) && export D9MT_AUTO_FPS_FROM="$FPS_FROM"
 if (( TRACE )); then export D9MT_TRACE_RT=2 D9MT_AUTO_TRACE_AT="$SHOT"; fi
 
 echo "autotest: $SCEN  shot@$SHOT exit@$EXIT fps_from=$FPS_FROM trace=$TRACE  -> $OUT"
 zsh "$LAUNCHER" >/dev/null 2>&1 &
 start=$SECONDS
+quit_seen=0
 while (( SECONDS - start < TIMEOUT )); do
   [[ -f "$GAME/d9mt_auto/done.txt" ]] && break
+  if (( QUIT )); then
+    if (( ! quit_seen )) && grep -q "requesting normal game quit" "$GAME/d9mt_auto/autotest.log" 2>/dev/null; then
+      quit_seen=$SECONDS
+    fi
+    if (( quit_seen )); then
+      pgrep -q -x gta_sa.exe || { echo "game exited cleanly $(( SECONDS - quit_seen ))s after the quit request" > "$GAME/d9mt_auto/done.txt"; break; }
+      (( SECONDS - quit_seen > 30 )) && { echo "HANG: still running 30s after the quit request" > "$GAME/d9mt_auto/quit_hang.txt"; break; }
+    fi
+  fi
   activate_game
   sleep 2
 done
 result=ok
 [[ -f "$GAME/d9mt_auto/done.txt" ]] || result=timeout
+if [[ -f "$GAME/d9mt_auto/quit_hang.txt" ]]; then
+  result=hang
+  hp=$(pgrep -x gta_sa.exe | head -1)
+  [[ -n "$hp" ]] && xcrun python3 "$REPO/tools/sampler.py" "$hp" 0 6 "$OUT/hang.json" > "$OUT/hang_sampler.log" 2>&1
+fi
 sleep 3
 kill_game
 sleep 2
@@ -78,6 +95,7 @@ rm -f "$GAME/d9mt_autotest_scenario.ini"
 
 echo "result: $result ($(( SECONDS - start ))s)"
 [[ -f "$OUT/fps.txt" ]] && echo "fps: $(cat "$OUT/fps.txt")"
+(( QUIT )) && cat "$OUT/done.txt" "$OUT/quit_hang.txt" 2>/dev/null
 [[ -f "$OUT/autotest.log" ]] && tail -4 "$OUT/autotest.log"
 grep -a -m1 "Unhandled page fault" "$OUT/x87run.log" 2>/dev/null
 echo "$OUT"

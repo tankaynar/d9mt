@@ -37,9 +37,9 @@ static Void_t g_orig_frontend_update, g_orig_idle_update;
 static char g_dir[MAX_PATH]; // game folder (gta_sa.exe's directory); modloader changes the cwd while loading ASIs
 static FILE *g_log;
 static struct {
-  int slot, hour, minute, weather, skip_intro, settle, has_pos, has_heading, cam_behind, area;
+  int slot, hour, minute, weather, skip_intro, settle, has_pos, has_heading, cam_behind, area, quit_after;
   float x, y, z, heading_deg;
-} cfg = {0, -1, -1, -1, 1, 120, 0, 0, 1, -1, 0, 0, 0, 0};
+} cfg = {0, -1, -1, -1, 1, 120, 0, 0, 1, -1, 0, 0, 0, 0, 0};
 
 static void logf_(const char *fmt, ...) {
   if (!g_log) return;
@@ -72,6 +72,7 @@ static void load_scenario(const char *path) {
     else if (!strcmp(k, "cam_behind")) cfg.cam_behind = atoi(v);
     else if (!strcmp(k, "pos")) cfg.has_pos = sscanf(v, "%f,%f,%f", &cfg.x, &cfg.y, &cfg.z) == 3;
     else if (!strcmp(k, "area")) cfg.area = atoi(v);
+    else if (!strcmp(k, "quit_after")) cfg.quit_after = atoi(v);
     else if (!strcmp(k, "heading")) { cfg.heading_deg = (float)atof(v); cfg.has_heading = 1; }
   }
   fclose(f);
@@ -155,11 +156,17 @@ static void tick(void) {
       logf_("scene ready, mark %s", mark ? "sent to d9mt" : "unavailable (not d9mt)");
       if (mark) mark();
       g_phase = 3;
+      g_frames = 0;
     }
     break;
   }
-  case 3: // hold the scene still until d9mt exits the process
+  case 3: // hold the scene still until d9mt exits the process (or quit the game normally: quit_after=N)
     freeze_world();
+    if (cfg.quit_after > 0 && ++g_frames >= cfg.quit_after) {
+      logf_("requesting normal game quit (RsGlobal.quit 0xC17050 = 1)");
+      *(volatile int *)0xC17050 = 1;
+      g_phase = 4;
+    }
     break;
   default:
     break;
