@@ -457,7 +457,9 @@ private:
   uint64_t snapshot_ps_version_ = ~0ULL;
 
   // Persistent FF VS constant buffer — only changed sections updated per draw
-  float cached_ff_vs_[100][4] = {};
+  // FF VS constants; layout shared with airconv d3d9_ff_shader.cpp (c[100+i] = light i specular)
+  static constexpr uint32_t kFFVSConstCount = 108;
+  float cached_ff_vs_[kFFVSConstCount][4] = {};
   float cached_ff_ps_[3][4] = {};
   enum FFDirty : uint32_t {
     kFFDirtyWorld      = 1 << 0, // c[0..3], c[12..15], c[16..19]

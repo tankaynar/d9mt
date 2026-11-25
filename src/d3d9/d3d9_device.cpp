@@ -2547,7 +2547,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   constexpr uint64_t VB_ENTRY_SIZE = 16;
   constexpr uint64_t PS_CONST_BUF_SIZE = 256 * 4 * sizeof(float); // PS needs full 256 regs (special regs at 254-255)
   // VS constant count is known from shader — right-size to avoid wasting argbuf
-  uint16_t vs_const_count = current_vs_ ? (uint16_t)std::min(current_vs_->maxConstantReg(), 256u) : 100;
+  uint16_t vs_const_count = current_vs_ ? (uint16_t)std::min(current_vs_->maxConstantReg(), 256u) : (uint16_t)kFFVSConstCount;
   uint64_t vs_const_buf_size = vs_const_count * 4 * sizeof(float);
   uint64_t vb_region_size = num_vb_slots * VB_ENTRY_SIZE;
   uint64_t argbuf_size = vb_region_size + vs_const_buf_size + PS_CONST_BUF_SIZE;
@@ -2615,7 +2615,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
       memcpy(snap->vs, vsConstants_, cap.vs_const_count * 4 * sizeof(float));
     } else {
       UpdateFFConstants();
-      memcpy(snap->vs, cached_ff_vs_, 100 * 4 * sizeof(float));
+      memcpy(snap->vs, cached_ff_vs_, sizeof(cached_ff_vs_));
     }
     if (current_ps_) {
       memcpy(snap->ps, psConstants_, cap.ps_const_count * 4 * sizeof(float));
@@ -3637,11 +3637,14 @@ void D3D9Device::UpdateFFConstants() {
 
   if (dirty & kFFDirtyLights) {
     memset(&vs[28], 0, 40 * 4 * sizeof(float));
+    memset(&vs[100], 0, 8 * 4 * sizeof(float));
     uint32_t li = 0;
     for (DWORD i = 0; i < kMaxLights && li < 8; i++) {
       if (!light_enabled_[i]) continue;
       auto &light = lights_[i];
       uint32_t base = 28 + li * 5;
+      vs[100 + li][0] = light.Specular.r; vs[100 + li][1] = light.Specular.g;
+      vs[100 + li][2] = light.Specular.b; vs[100 + li][3] = light.Specular.a;
 
       float px, py, pz;
       TransformPointByMatrix(view, light.Position.x, light.Position.y, light.Position.z, px, py, pz);

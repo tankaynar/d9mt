@@ -506,6 +506,8 @@ static void compileFFVertexShader(
         builder.CreateConstGEP1_32(float4Ty, cbFloat4, base + 3));
       auto *lightAtten = builder.CreateLoad(float4Ty,
         builder.CreateConstGEP1_32(float4Ty, cbFloat4, base + 4));
+      auto *lightSpecular = builder.CreateLoad(float4Ty,
+        builder.CreateConstGEP1_32(float4Ty, cbFloat4, 100 + li));
 
       Value *L; // light direction (towards light)
       Value *atten;
@@ -613,15 +615,16 @@ static void compileFFVertexShader(
         builder.CreateFAdd(builder.CreateFAdd(NHx, NHy), NHz),
         ConstantFP::get(floatTy, 0.0));
       Value *specFactor = air.CreateFPUnOp(air.exp2, builder.CreateFMul(power, air.CreateFPUnOp(air.log2, NdotH)));
-      // Zero specular when NdotL <= 0
+      // Zero specular when NdotL <= 0 or NdotH <= 0 (also avoids NaN from power * log2(0) when power == 0)
       specFactor = builder.CreateSelect(
-        builder.CreateFCmpOGT(NdotL, ConstantFP::get(floatTy, 0.0)),
+        builder.CreateAnd(builder.CreateFCmpOGT(NdotL, ConstantFP::get(floatTy, 0.0)),
+                          builder.CreateFCmpOGT(NdotH, ConstantFP::get(floatTy, 0.0))),
         specFactor, ConstantFP::get(floatTy, 0.0));
       auto *specSplat = builder.CreateVectorSplat(4, specFactor);
       specAccum = builder.CreateFAdd(specAccum,
         builder.CreateFMul(attenSplat,
           builder.CreateFMul(specSplat,
-            builder.CreateFMul(lightDiffuse, matSpecular))));
+            builder.CreateFMul(lightSpecular, matSpecular)))); // D3DLIGHT9.Specular, not Diffuse
     }
 
     // Saturate lighting results
