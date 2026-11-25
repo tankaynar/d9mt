@@ -35,6 +35,12 @@ public:
       mip.height = mipH;
       mip.pitch = D3D9FormatPitch(format, mipW);
       mip.dataSize = D3D9FormatMipSize(format, mipW, mipH);
+      if (!IsCompressedFormat(format)) {
+        // D3D9 drivers return DWORD-aligned row pitches; games write whole DWORDs per row (GTA SA mods wrote
+        // past 1-byte L8 1x1/2x2 mips).
+        mip.pitch = (mip.pitch + 3) & ~3u;
+        mip.dataSize = mip.pitch * mipH;
+      }
       mip.data = std::malloc(mip.dataSize + kGuardBytes);
       d9mt_allocstats::add(d9mt_allocstats::TexMip, mip.dataSize + kGuardBytes);
       std::memset(mip.data, 0, mip.dataSize);

@@ -1640,6 +1640,70 @@ static void compilePixelShader(
       break;
     }
 
+    case DxsoOpcode::Dp2Add: {
+      // dst = src0.x*src1.x + src0.y*src1.y + src2 (src2 uses a replicate swizzle)
+      auto *a = loadSrc(psInst.src[0]);
+      auto *b = loadSrc(psInst.src[1]);
+      auto *c = loadSrc(psInst.src[2]);
+      auto *mul = builder.CreateFMul(a, b);
+      auto *dot = builder.CreateFAdd(builder.CreateExtractElement(mul, builder.getInt32(0)),
+                                     builder.CreateExtractElement(mul, builder.getInt32(1)));
+      dot = builder.CreateFAdd(dot, builder.CreateExtractElement(c, builder.getInt32(0)));
+      storeDst(psInst.dst, builder.CreateVectorSplat(4, dot));
+      break;
+    }
+
+    case DxsoOpcode::DsX:
+    case DxsoOpcode::DsY: {
+      auto *a = loadSrc(psInst.src[0]);
+      storeDst(psInst.dst, air.CreateDerivative(a, psInst.instruction.opcode == DxsoOpcode::DsY));
+      break;
+    }
+
+    case DxsoOpcode::Cnd: {
+      // dst = src0 > 0.5 ? src1 : src2 (per component)
+      auto *s0 = loadSrc(psInst.src[0]);
+      auto *s1 = loadSrc(psInst.src[1]);
+      auto *s2 = loadSrc(psInst.src[2]);
+      auto *half = ConstantVector::getSplat(ElementCount::getFixed(4), ConstantFP::get(types._float, 0.5));
+      storeDst(psInst.dst, builder.CreateSelect(builder.CreateFCmpOGT(s0, half), s1, s2));
+      break;
+    }
+
+    case DxsoOpcode::TexLdd:
+    case DxsoOpcode::TexLdl: {
+      // texldd dst, coord, sampler, ddx, ddy  /  texldl dst, coord (lod in .w), sampler
+      bool grad = psInst.instruction.opcode == DxsoOpcode::TexLdd;
+      uint32_t sampReg = psInst.src[1].id.num;
+      auto it = samplerBindings.find(sampReg);
+      if (it != samplerBindings.end()) {
+        auto &binding = it->second;
+        auto *float2Ty = FixedVectorType::get(types._float, 2);
+        auto xy = [&](Value *v) {
+          Value *r = UndefValue::get(float2Ty);
+          r = builder.CreateInsertElement(r, builder.CreateExtractElement(v, builder.getInt32(0)), builder.getInt32(0));
+          return builder.CreateInsertElement(r, builder.CreateExtractElement(v, builder.getInt32(1)), builder.getInt32(1));
+        };
+        auto *coords = loadSrc(psInst.src[0]);
+        auto *texHandle = function->getArg(binding.texArgIdx);
+        auto *sampHandle = function->getArg(binding.sampArgIdx);
+        int32_t offsets[3] = {0, 0, 0};
+        Value *sampled;
+        if (grad) {
+          auto *ddx = xy(loadSrc(psInst.src[2]));
+          auto *ddy = xy(loadSrc(psInst.src[3]));
+          sampled = air.CreateSampleGrad(binding.texDesc, texHandle, sampHandle, xy(coords), nullptr, ddx, ddy,
+                                         offsets).first;
+        } else {
+          auto *lod = builder.CreateExtractElement(coords, builder.getInt32(3));
+          sampled = air.CreateSample(binding.texDesc, texHandle, sampHandle, xy(coords), nullptr, offsets,
+                                     llvm::air::sample_level{lod}).first;
+        }
+        storeDst(psInst.dst, sampled);
+      }
+      break;
+    }
+
     default:
       fprintf(stderr, "DXSO PS: unhandled opcode %u\n", (unsigned)psInst.instruction.opcode);
       break;
