@@ -269,7 +269,10 @@ public:
     uint32_t stencil_ref;
     obj_handle_t dsso;
     struct TexCapture {
-      Texture *texture; // raw pointer — lifetime ensured by Com<D3D9Texture2D> in bound_textures_[]
+      // Owning reference: the game may unbind and free a texture right after the draw call, before the
+      // encoder thread has used this capture (a raw pointer here caused a use-after-free of the MTLTexture
+      // that crashed Metal's completion thread = freeze on the first gameplay frame in GTA SA).
+      Rc<Texture> texture;
       TextureViewKey viewKey;
       uint32_t stage;
     };

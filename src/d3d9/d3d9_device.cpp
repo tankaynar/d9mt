@@ -1755,6 +1755,22 @@ obj_handle_t D3D9Device::CreatePSO() {
       }
       ffkey.tex_coord_count = effective;
     }
+#ifdef DXMT_PERF
+    if (current_vs_) { // d9mt diag: custom VS + FF PS (e.g. RW skinned peds) — log each distinct FF PS key once
+      static std::set<std::string> seen_keys;
+      std::string k((const char *)&ffkey, sizeof(ffkey));
+      if (seen_keys.size() < 24 && seen_keys.insert(k).second) {
+        auto &st = ffkey.stages;
+        fprintf(stderr, "d9mt vs+ffps key #%u: vs=%p tccount=%u fog=%u atest=%u/%u spec=%u | s0 cop=%u a1=%u a2=%u aop=%u a1=%u a2=%u tex=%u tci=%u | s1 cop=%u a1=%u a2=%u aop=%u tex=%u | tex0=%p\n",
+                (unsigned)seen_keys.size(), (void *)current_vs_.ptr(), ffkey.tex_coord_count, ffkey.fog_enable,
+                ffkey.alpha_test_enable, ffkey.alpha_test_func, ffkey.specular_enable,
+                st[0].color_op, st[0].color_arg1, st[0].color_arg2, st[0].alpha_op, st[0].alpha_arg1, st[0].alpha_arg2,
+                st[0].has_texture, st[0].texcoord_index,
+                st[1].color_op, st[1].color_arg1, st[1].color_arg2, st[1].alpha_op, st[1].has_texture,
+                (void *)bound_textures_[0].ptr());
+      }
+    }
+#endif
     auto ff_ps = GetOrCreateFFPS(ffkey);
     ps_handle = ff_ps.handle;
     if (!ps_handle) {
@@ -2192,7 +2208,7 @@ static void EmitCommonRenderSetup(ArgumentEncodingContext &ctx, DrawCapture &cap
       setsamp.index = tc.stage; // must match shader [[sampler(stage)]]; Metal allows 0..15
     }
     double tr = es_now();
-    ctx.makeResident<PipelineStage::Pixel, PipelineKind::Ordinary>(tc.texture, tc.viewKey);
+    ctx.makeResident<PipelineStage::Pixel, PipelineKind::Ordinary>(tc.texture.ptr(), tc.viewKey);
     g_es_t[5] += es_now() - tr;
   }
   if (cap.texCaptureCount > g_es_maxtex) g_es_maxtex = cap.texCaptureCount;
@@ -2628,7 +2644,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     for (uint32_t mask = tex_bound_mask_; mask; mask &= mask - 1) {
       uint32_t stage = __builtin_ctz(mask);
       auto *tex = bound_textures_[stage].ptr();
-      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture().ptr(), tex->viewKey(), stage};
+      shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {tex->texture(), tex->viewKey(), stage};
 
       SamplerKey samplerKey;
       memcpy(samplerKey.state, sampler_states_[stage], sizeof(samplerKey.state));
@@ -2653,7 +2669,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
           if (reg >= 16) continue;
           if (!bound_textures_[reg]) {
             shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {
-                default_white_tex_.ptr(), default_white_view_, reg};
+                default_white_tex_, default_white_view_, reg};
             shadow_cap_.samplerHandles[reg] = default_sampler_;
           }
         }
@@ -2665,7 +2681,7 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
           break;
         if (!bound_textures_[stage]) {
           shadow_cap_.texCaptures[shadow_cap_.texCaptureCount++] = {
-              default_white_tex_.ptr(), default_white_view_, stage};
+              default_white_tex_, default_white_view_, stage};
           shadow_cap_.samplerHandles[stage] = default_sampler_;
         }
       }
@@ -2675,16 +2691,16 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
     // Compute fingerprint while shadow is freshly built
     uint64_t h = shadow_cap_.texCaptureCount;
     for (uint8_t i = 0; i < shadow_cap_.texCaptureCount; i++) {
-      h ^= reinterpret_cast<uint64_t>(shadow_cap_.texCaptures[i].texture) * 0x9E3779B97F4A7C15ULL;
+      h ^= reinterpret_cast<uint64_t>(shadow_cap_.texCaptures[i].texture.ptr()) * 0x9E3779B97F4A7C15ULL;
       h ^= (uint64_t)shadow_cap_.texCaptures[i].viewKey * 0x517CC1B727220A95ULL;
       h ^= (uint64_t)shadow_cap_.texCaptures[i].stage << 48;
       h ^= (uint64_t)shadow_cap_.samplerHandles[shadow_cap_.texCaptures[i].stage] * 0x6C62272E07BB0142ULL;
     }
     shadow_cap_.tex_sampler_fingerprint = h;
   }
-  // Copy from shadow (cheap memcpy of raw pointers + handles, no Rc<> atomics)
-  memcpy(cap.texCaptures.data(), shadow_cap_.texCaptures.data(),
-         shadow_cap_.texCaptureCount * sizeof(DrawCapture::TexCapture));
+  // Copy from shadow (Rc<Texture> keeps each texture alive until this capture has been encoded/executed)
+  for (uint8_t i = 0; i < shadow_cap_.texCaptureCount; i++)
+    cap.texCaptures[i] = shadow_cap_.texCaptures[i];
   cap.texCaptureCount = shadow_cap_.texCaptureCount;
   memcpy(cap.samplerHandles, shadow_cap_.samplerHandles, sizeof(cap.samplerHandles));
   cap.tex_sampler_fingerprint = shadow_cap_.tex_sampler_fingerprint;
