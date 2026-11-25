@@ -9,6 +9,17 @@
 
 // MTLAttributeFormat values (from Metal headers)
 enum {
+  DxsoAttrFormatUChar4                = 3,
+  DxsoAttrFormatUShort2               = 13,
+  DxsoAttrFormatUShort4               = 15,
+  DxsoAttrFormatShort2                = 16,
+  DxsoAttrFormatShort4                = 18,
+  DxsoAttrFormatUShort2Normalized     = 19,
+  DxsoAttrFormatUShort4Normalized     = 21,
+  DxsoAttrFormatShort2Normalized      = 22,
+  DxsoAttrFormatShort4Normalized      = 24,
+  DxsoAttrFormatHalf2                 = 25,
+  DxsoAttrFormatHalf4                 = 27,
   DxsoAttrFormatUChar4Normalized      = 9,
   DxsoAttrFormatFloat                 = 28,
   DxsoAttrFormatFloat2                = 29,
@@ -300,6 +311,64 @@ static void compileVertexShader(
           case DxsoAttrFormatFloat4: {
             auto *vec_ptr = builder.CreateBitCast(byte_ptr, float4Ty->getPointerTo((uint32_t)AddressSpace::device));
             result = builder.CreateLoad(float4Ty, vec_ptr);
+            break;
+          }
+          case DxsoAttrFormatUChar4:
+          case DxsoAttrFormatUShort2:
+          case DxsoAttrFormatUShort4:
+          case DxsoAttrFormatShort2:
+          case DxsoAttrFormatShort4:
+          case DxsoAttrFormatUShort2Normalized:
+          case DxsoAttrFormatUShort4Normalized:
+          case DxsoAttrFormatShort2Normalized:
+          case DxsoAttrFormatShort4Normalized:
+          case DxsoAttrFormatHalf2:
+          case DxsoAttrFormatHalf4: {
+            // Integer / normalized / half formats: convert per component, missing components = (0,0,0,1)
+            // like D3D9. (Previously these fell into the float4 fallback below: e.g. UBYTE4 blend indices
+            // were read as garbage floats, so skinned peds all used bone 0 = T-pose.)
+            unsigned count = 4;
+            Type *compTy = builder.getInt16Ty();
+            bool isSigned = false, normalize = false, isHalf = false;
+            switch (elem.format) {
+            case DxsoAttrFormatUChar4: compTy = builder.getInt8Ty(); break;
+            case DxsoAttrFormatUShort2: count = 2; break;
+            case DxsoAttrFormatUShort4: break;
+            case DxsoAttrFormatShort2: count = 2; isSigned = true; break;
+            case DxsoAttrFormatShort4: isSigned = true; break;
+            case DxsoAttrFormatUShort2Normalized: count = 2; normalize = true; break;
+            case DxsoAttrFormatUShort4Normalized: normalize = true; break;
+            case DxsoAttrFormatShort2Normalized: count = 2; isSigned = true; normalize = true; break;
+            case DxsoAttrFormatShort4Normalized: isSigned = true; normalize = true; break;
+            case DxsoAttrFormatHalf2: count = 2; isHalf = true; break;
+            case DxsoAttrFormatHalf4: isHalf = true; break;
+            default: break;
+            }
+            auto *comp_ptr = builder.CreateBitCast(byte_ptr, compTy->getPointerTo((uint32_t)AddressSpace::device));
+            result = ConstantVector::get({
+              ConstantFP::get(types._float, 0.0),
+              ConstantFP::get(types._float, 0.0),
+              ConstantFP::get(types._float, 0.0),
+              ConstantFP::get(types._float, 1.0)});
+            for (unsigned c = 0; c < count; c++) {
+              Value *raw = builder.CreateLoad(compTy, builder.CreateConstGEP1_32(compTy, comp_ptr, c));
+              Value *f;
+              if (isHalf) {
+                f = builder.CreateFPExt(builder.CreateBitCast(raw, builder.getHalfTy()), types._float);
+              } else if (isSigned) {
+                f = builder.CreateSIToFP(raw, types._float);
+                if (normalize) { // D3D9 SHORT*N: x / 32767, clamped to -1
+                  f = builder.CreateFDiv(f, ConstantFP::get(types._float, 32767.0));
+                  auto *minus1 = ConstantFP::get(types._float, -1.0);
+                  f = builder.CreateSelect(builder.CreateFCmpOLT(f, minus1), minus1, f);
+                }
+              } else {
+                f = builder.CreateUIToFP(raw, types._float);
+                if (normalize)
+                  f = builder.CreateFDiv(f, ConstantFP::get(types._float, 65535.0));
+              }
+              result = builder.CreateInsertElement(result, f, builder.getInt32(c));
+            }
             break;
           }
           default: {

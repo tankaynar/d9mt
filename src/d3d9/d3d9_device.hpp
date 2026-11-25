@@ -370,7 +370,7 @@ private:
   D3DMATERIAL9 material_ = {};
 
   // Lights
-  static constexpr DWORD kMaxLights = 8;
+  static constexpr DWORD kMaxLights = 32; // D3D9 allows any light index; only 8 may be active (consumers cap at 8)
   D3DLIGHT9 lights_[kMaxLights] = {};
   BOOL light_enabled_[kMaxLights] = {};
 
