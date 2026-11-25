@@ -2474,6 +2474,29 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
         }
       }
     }
+    if (!current_vs_) { // d9mt diag: FF draws with a degenerate / non-affine / NaN world matrix (save-disk hunt)
+      bool hasPosT = false;
+      for (auto &e : current_vdecl_->elements()) if (e.Usage == D3DDECLUSAGE_POSITIONT) hasPosT = true;
+      if (!hasPosT) {
+        const D3DMATRIX &w = transforms_[TransformIndex(D3DTS_WORLD)];
+        float det = w._11 * (w._22 * w._33 - w._23 * w._32) - w._12 * (w._21 * w._33 - w._23 * w._31) +
+                    w._13 * (w._21 * w._32 - w._22 * w._31);
+        bool nan = false;
+        for (int i = 0; i < 16; i++) { float f = (&w._11)[i]; if (f != f) nan = true; }
+        bool nonaffine = w._14 != 0.f || w._24 != 0.f || w._34 != 0.f || w._44 != 1.f;
+        static unsigned mlogs = 0;
+        if ((nan || nonaffine || (det > -1e-6f && det < 1e-6f)) && mlogs < 40) {
+          mlogs++;
+          fprintf(stderr, "d9mt odd-world #%u: det=%g nan=%d nonaffine=%d tex0=%p blend=%lu %lu/%lu zen=%lu zw=%lu cull=%lu"
+                  " | %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g\n", mlogs, det, nan, nonaffine,
+                  (void *)bound_textures_[0].ptr(), (unsigned long)render_states_[D3DRS_ALPHABLENDENABLE],
+                  (unsigned long)render_states_[D3DRS_SRCBLEND], (unsigned long)render_states_[D3DRS_DESTBLEND],
+                  (unsigned long)render_states_[D3DRS_ZENABLE], (unsigned long)render_states_[D3DRS_ZWRITEENABLE],
+                  (unsigned long)render_states_[D3DRS_CULLMODE],
+                  w._11, w._12, w._13, w._14, w._21, w._22, w._23, w._24, w._31, w._32, w._33, w._34, w._41, w._42, w._43, w._44);
+        }
+      }
+    }
     static unsigned fog_logs = 0;
     if (skinned && current_vs_ && (fog_logs < 12 || (fog_logs % 2000) == 0)) {
       auto fl = [&](D3DRENDERSTATETYPE rs) { float f; memcpy(&f, &render_states_[rs], 4); return f; };
