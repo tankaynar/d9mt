@@ -163,8 +163,9 @@ _MTLDevice_newBuffer(void *obj) {
   if (info->memory.ptr) {
     /* d9mt: drop host EXECUTE permission on the wrapped CPU memory. For 32-bit games with DEP off, Wine maps all
      * data rwx; Rosetta then treats a hot page of our argument buffers as code and traps every write into its
-     * exception server (~100k faults/s in GTA SA outdoors, multi-second stalls). Only whole 16 KB host pages inside
-     * the range are changed, so no host page gets mixed 4 KB protections. D9MT_NOEXEC=0 disables this. */
+     * exception server (~100k faults/s in GTA SA outdoors, multi-second stalls). The whole 16 KB host pages
+     * touching the range are changed: d9mt allocates all wrapped memory from dedicated VirtualAlloc regions
+     * (big blocks and a small-buffer arena), so those pages hold only our buffers. D9MT_NOEXEC=0 disables this. */
     static int noexec = -1;
     if (noexec < 0) {
       const char *e = getenv("D9MT_NOEXEC");
@@ -172,8 +173,8 @@ _MTLDevice_newBuffer(void *obj) {
     }
     if (noexec) {
       const uintptr_t host_page = 16384;
-      uintptr_t start = ((uintptr_t)info->memory.ptr + host_page - 1) & ~(host_page - 1);
-      uintptr_t end = ((uintptr_t)info->memory.ptr + info->length) & ~(host_page - 1);
+      uintptr_t start = (uintptr_t)info->memory.ptr & ~(host_page - 1);
+      uintptr_t end = ((uintptr_t)info->memory.ptr + info->length + host_page - 1) & ~(host_page - 1);
       if (end > start)
         mprotect((void *)start, end - start, PROT_READ | PROT_WRITE);
     }
