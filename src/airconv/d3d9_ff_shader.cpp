@@ -893,7 +893,7 @@ static void compileFFPixelShader(
 
     auto [sampled, residency] = air.CreateSample(
       binding.texDesc, texHandle, sampHandle, coord2d, nullptr, offsets,
-      llvm::air::sample_level{air.getFloat(0)}
+      llvm::air::sample_bias{air.getFloat(0)} // implicit LOD (mipmaps), like D3D9; level 0 aliased badly
     );
     texSamples[stage] = sampled;
   }

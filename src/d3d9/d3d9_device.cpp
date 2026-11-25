@@ -637,6 +637,15 @@ HRESULT STDMETHODCALLTYPE D3D9Device::Clear(
   auto &queue = dxmt_device_->queue();
   auto chunk = queue.CurrentChunk();
 
+#ifdef DXMT_PERF
+  if (clearColor && current_rt_ && current_rt_.ptr() != backbuffer_.ptr()) {
+    static unsigned rt_clear_logs = 0;
+    if (rt_clear_logs++ < 30)
+      fprintf(stderr, "d9mt rt-clear #%u: rt=%p %ux%u mtlfmt=%u color=%08lx flags=%lx count=%lu\n", rt_clear_logs,
+              (void *)current_rt_.ptr(), current_rt_->width(), current_rt_->height(), (unsigned)current_rt_format_,
+              (unsigned long)Color, (unsigned long)Flags, (unsigned long)Count);
+  }
+#endif
   if (clearColor) {
     chunk->emitcc([
       r, g, b, a,
@@ -931,6 +940,12 @@ HRESULT STDMETHODCALLTYPE D3D9Device::CreateTexture(
     // Metal sees R=luminance, G=alpha. Apply .rrrg swizzle.
     WMTTextureSwizzleChannels swizzle = {
       WMTTextureSwizzleRed, WMTTextureSwizzleRed, WMTTextureSwizzleRed, WMTTextureSwizzleGreen
+    };
+    viewKey = texture->createViewWithSwizzle(viewDesc, swizzle);
+  } else if (Format == D3DFMT_X8R8G8B8 || Format == D3DFMT_X1R5G5B5) {
+    // X formats: the unused byte/bit must read as alpha = 1 (Metal returns whatever is stored there).
+    WMTTextureSwizzleChannels swizzle = {
+      WMTTextureSwizzleRed, WMTTextureSwizzleGreen, WMTTextureSwizzleBlue, WMTTextureSwizzleOne
     };
     viewKey = texture->createViewWithSwizzle(viewDesc, swizzle);
   } else if (Format == D3DFMT_L8) {

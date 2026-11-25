@@ -1562,7 +1562,7 @@ static void compilePixelShader(
           int32_t offsets[3] = {0, 0, 0};
           auto [sampled, residency] = air.CreateSample(
             binding.texDesc, texHandle, sampHandle, coord2d, nullptr, offsets,
-            llvm::air::sample_level{air.getFloat(0)});
+            llvm::air::sample_bias{air.getFloat(0)}); // implicit LOD (mipmaps), like D3D9
 
           // Store sampled result to temp register (t# registers are temps after tex)
           builder.CreateStore(sampled, builder.CreateGEP(
@@ -1588,7 +1588,7 @@ static void compilePixelShader(
           int32_t offsets[3] = {0, 0, 0};
           auto [sampled, residency] = air.CreateSample(
             binding.texDesc, texHandle, sampHandle, coord2d, nullptr, offsets,
-            llvm::air::sample_level{air.getFloat(0)});
+            llvm::air::sample_bias{air.getFloat(0)}); // implicit LOD (mipmaps), like D3D9
           storeDst(psInst.dst, sampled);
         }
       }
