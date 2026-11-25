@@ -2753,6 +2753,41 @@ DrawCapture D3D9Device::BuildDrawCapture(WMTPrimitiveType mtlPrimType) {
   return cap;
 }
 
+#ifdef DXMT_PERF
+// d9mt diag: log pre-transformed (POSITIONT) draws that have a vertex D3D9 tolerates but Metal clips:
+// z outside [0,1], rhw <= 0, or coordinates far off-screen (sky-triangle investigation).
+static void d9mt_check_rhw(D3D9VertexDeclaration *vdecl, const uint8_t *base, UINT stride, D3DPRIMITIVETYPE prim,
+                           UINT primCount, const char *tag) {
+  static unsigned logs = 0;
+  if (!vdecl || !base || logs >= 40) return;
+  int posOff = -1, colOff = -1;
+  for (auto &e : vdecl->elements()) {
+    if (e.Stream != 0) continue;
+    if (e.Usage == D3DDECLUSAGE_POSITIONT && e.Type == D3DDECLTYPE_FLOAT4) posOff = e.Offset;
+    if (e.Usage == D3DDECLUSAGE_COLOR && e.UsageIndex == 0 && e.Type == D3DDECLTYPE_D3DCOLOR) colOff = e.Offset;
+  }
+  if (posOff < 0) return;
+  UINT n = prim == D3DPT_TRIANGLELIST ? primCount * 3
+         : (prim == D3DPT_TRIANGLESTRIP || prim == D3DPT_TRIANGLEFAN) ? primCount + 2 : 0;
+  if (!n || n > 64) return;
+  bool odd = false;
+  for (UINT i = 0; i < n; i++) {
+    const float *p = (const float *)(base + i * stride + posOff);
+    if (p[2] < 0.f || p[2] > 1.f || p[3] <= 0.f || p[0] < -4096.f || p[0] > 8192.f || p[1] < -4096.f || p[1] > 8192.f)
+      odd = true;
+  }
+  if (!odd) return;
+  logs++;
+  std::string v;
+  for (UINT i = 0; i < n && i < 8; i++) {
+    const float *p = (const float *)(base + i * stride + posOff);
+    unsigned c = colOff >= 0 ? *(const uint32_t *)(base + i * stride + colOff) : 0;
+    v += str::format(" (", p[0], ",", p[1], ",", p[2], ",", p[3], " c=", std::hex, c, std::dec, ")");
+  }
+  fprintf(stderr, "d9mt rhw-odd #%u %s prim=%d count=%u:%s\n", logs, tag, (int)prim, primCount, v.c_str());
+}
+#endif
+
 // DrawPrimitive
 HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
     D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) { D9MT_TRACE();
@@ -2765,6 +2800,13 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitive(
   WMTPrimitiveType mtlPrimType;
   if (!GetPrimitiveInfo(PrimitiveType, PrimitiveCount, vertexCount, mtlPrimType))
     return D9MT_FAIL(D3DERR_INVALIDCALL);
+#ifdef DXMT_PERF
+  if (stream_sources_[0] && stream_sources_[0]->allocation())
+    d9mt_check_rhw(current_vdecl_.ptr(),
+                   (const uint8_t *)stream_sources_[0]->allocation()->mappedMemory(0) + stream_offsets_[0] +
+                       (size_t)StartVertex * stream_strides_[0],
+                   stream_strides_[0], PrimitiveType, PrimitiveCount, "DP");
+#endif
 
   // Triangle fan: generate synthetic index buffer
   if (PrimitiveType == D3DPT_TRIANGLEFAN) {
@@ -2945,6 +2987,10 @@ HRESULT STDMETHODCALLTYPE D3D9Device::DrawPrimitiveUP(
   WMTPrimitiveType mtlPrimType;
   if (!GetPrimitiveInfo(PrimitiveType, PrimitiveCount, vertexCount, mtlPrimType))
     return D9MT_FAIL(D3DERR_INVALIDCALL);
+#ifdef DXMT_PERF
+  d9mt_check_rhw(current_vdecl_.ptr(), (const uint8_t *)pVertexStreamZeroData, VertexStreamZeroStride, PrimitiveType,
+                 PrimitiveCount, "DPUP");
+#endif
 
   auto &queue = dxmt_device_->queue();
 
